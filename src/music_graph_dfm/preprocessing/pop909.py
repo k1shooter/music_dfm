@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 from music_graph_dfm.constants import CACHE_SCHEMA_VERSION, DEFAULT_TICKS_PER_BEAT
-from music_graph_dfm.preprocess.chords import load_pop909_chords
-from music_graph_dfm.preprocess.structure import derive_section_labels, derive_span_relation_matrix
+from music_graph_dfm.preprocessing.chords import load_pop909_chords
+from music_graph_dfm.preprocessing.structure import derive_section_labels, derive_span_relation_matrix
 from music_graph_dfm.representation.pitch_codec import PitchTokenCodec
 from music_graph_dfm.representation.rhythm_templates import (
     RhythmTemplateVocab,
@@ -187,7 +187,12 @@ def _build_state(
         extension = min(cfg.max_extension_class, extension)
 
         template_id = rhythm_vocab.encode(beats_per_bar, onset_bin, dur_class, tie, extension)
-        token = pitch_codec.encode_from_absolute_pitch(event.pitch, harm[span_idx], reg_center[span_idx])
+        token = pitch_codec.encode_from_absolute_pitch(
+            pitch=event.pitch,
+            harmonic_root=harm[span_idx],
+            key=key[span_idx],
+            reg_center=reg_center[span_idx],
+        )
 
         active.append(1)
         pitch_tokens.append(token)

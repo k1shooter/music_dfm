@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
-from music_graph_dfm.datasets import FSNTGV2JSONDataset
+from music_graph_dfm.data import FSNTGV2JSONDataset
 from music_graph_dfm.evaluation.metrics import aggregate_metrics, evaluate_generated_state
 from music_graph_dfm.representation.pitch_codec import PitchTokenCodec
 from music_graph_dfm.representation.rhythm_templates import RhythmTemplateVocab
@@ -65,6 +65,7 @@ def generate_from_checkpoint(
     num_samples: int = 16,
     num_steps: int = 96,
     device: str = "cpu",
+    sampler_mode: str = "dfm",
 ) -> List[FSNTGV2State]:
     samples = generate_samples_from_checkpoint(
         checkpoint=checkpoint,
@@ -73,6 +74,7 @@ def generate_from_checkpoint(
         num_samples=num_samples,
         num_steps=num_steps,
         device=device,
+        sampler_mode=sampler_mode,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(out_dir / "samples.jsonl", (s.to_dict() for s in samples))
@@ -86,6 +88,7 @@ def evaluate_checkpoint(
     num_samples: int = 16,
     num_steps: int = 96,
     device: str = "cpu",
+    sampler_mode: str = "dfm",
     out_dir: Path | None = None,
     out_path: Path | None = None,
 ) -> Dict[str, object]:
@@ -98,6 +101,7 @@ def evaluate_checkpoint(
         num_samples=num_samples,
         num_steps=num_steps,
         device=device,
+        sampler_mode=sampler_mode,
     )
 
     refs = FSNTGV2JSONDataset(data_root / f"{split}.jsonl")

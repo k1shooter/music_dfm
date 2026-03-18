@@ -19,9 +19,12 @@ Primary diffusion coordinates are factorized channels, not dense note-span edges
 `pitch_token` is a flattened categorical over:
 
 - `degree_wrt_harmony`
+- `role_class` (`chord_tone | scale_tone | chromatic`)
 - `register_offset`
 
 Encoding is relative to host-span harmony root (`span.harm`), not key tonic.
+Decode uses both `key` and `harm`: harmonic root determines the base pitch class, and `role_class`
+is used for role-consistent degree snapping before absolute reconstruction.
 
 Provided API:
 
@@ -61,6 +64,13 @@ Default path is coordinate-wise mixture with structure-first scheduling:
 2. span relations
 3. placement (`host/template`)
 4. note content
+
+Source distribution is factorized over coordinates with sparse priors for structure:
+
+- Bernoulli prior on note activation
+- sparse non-none prior on span relations
+- placement priors (`host/template`) constrained by masks and note activity
+- categorical priors for content channels
 
 Graph-kernel mode is optional for `span.harm` / `note.pitch_token` and marked approximate.
 
@@ -109,6 +119,16 @@ Includes:
 - edit training objective (`editflow_rate_loss`)
 
 This is separate from fixed-slot DFM training.
+
+## Decode Projection
+
+After every sampling step:
+
+- padded coordinates are zeroed by masks
+- inactive notes force `host=0` and `template=0`
+- invalid host indices are projected to inactive
+
+Derived dense note-span adjacency is materialized only when needed from `(host, template)`.
 
 ## Evaluation Protocol
 

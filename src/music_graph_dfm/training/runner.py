@@ -6,9 +6,14 @@ import random
 from pathlib import Path
 from typing import Dict, Iterable, List
 
-from music_graph_dfm.datasets import FSNTGV2JSONDataset, collate_states, infer_vocab_sizes
+from music_graph_dfm.data import FSNTGV2JSONDataset, collate_states, infer_vocab_sizes
 from music_graph_dfm.diffusion.ctmc import ctmc_sample
-from music_graph_dfm.diffusion.edit_flow import derive_oracle_edit_move, editflow_rate_loss, perturb_state_for_editflow
+from music_graph_dfm.diffusion.edit_flow import (
+    derive_oracle_edit_move,
+    editflow_rate_loss,
+    perturb_state_for_editflow,
+    sample_edit_ctmc_step,
+)
 from music_graph_dfm.diffusion.losses import auxiliary_denoising_loss, host_uniqueness_penalty, rate_matching_loss
 from music_graph_dfm.diffusion.masking import coordinate_masks, enforce_state_constraints
 from music_graph_dfm.diffusion.schedules import StructureFirstSchedule
@@ -69,7 +74,7 @@ def build_model(vocab_sizes: dict, model_cfg: dict, rhythm_vocab: RhythmTemplate
     kind = str(model_cfg.get("kind", "full"))
     onset, duration = _template_tables(rhythm_vocab, max(2, int(vocab_sizes["note.template"])))
 
-    if kind == "baseline":
+    if kind in {"baseline", "posterior", "progress_like"}:
         return SimpleFactorizedBaseline(vocab_sizes=vocab_sizes, cfg=cfg)
     return FSNTGV2HeteroTransformer(
         vocab_sizes=vocab_sizes,
@@ -389,6 +394,22 @@ def _sample_state(model, vocab_sizes: dict, ref_state: FSNTGV2State, num_steps: 
     return _coords_to_states(coords, batch)[0]
 
 
+def _sample_state_edit(model, ref_state: FSNTGV2State, num_steps: int, device):
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("torch is required") from exc
+
+    state = ref_state.copy()
+    for step in range(max(1, int(num_steps))):
+        t = torch.tensor((step + 1) / max(1, num_steps), device=device)
+        batch = _move_to_device(collate_states([state]), device)
+        with torch.no_grad():
+            edit_outputs = model.forward_edit(batch, t)
+        state = sample_edit_ctmc_step(state=state, edit_outputs_single=edit_outputs, h=1.0 / max(1, num_steps))
+    return state
+
+
 def generate_samples_from_checkpoint(
     checkpoint: Path,
     data_root: Path,
@@ -396,6 +417,7 @@ def generate_samples_from_checkpoint(
     num_samples: int = 16,
     num_steps: int = 96,
     device: str = "cpu",
+    sampler_mode: str = "dfm",
     whole_song_mode: str | None = None,
     whole_song_segments: int = 4,
 ) -> List[FSNTGV2State]:
@@ -407,23 +429,42 @@ def generate_samples_from_checkpoint(
     )
 
     out = []
+    sample_fn = _sample_state if sampler_mode == "dfm" else _sample_state_edit
     for i in range(num_samples):
         if whole_song_mode is None:
             ref = ds[i % len(ds)]
-            sampled = _sample_state(model, vocab_sizes, ref_state=ref, num_steps=num_steps, device=dev)
+            if sampler_mode == "dfm":
+                sampled = sample_fn(model, vocab_sizes, ref_state=ref, num_steps=num_steps, device=dev)
+            else:
+                sampled = sample_fn(model, ref_state=ref, num_steps=num_steps, device=dev)
             out.append(sampled)
             continue
 
         if whole_song_mode == "long_context":
             refs = [ds[(i * whole_song_segments + k) % len(ds)] for k in range(whole_song_segments)]
             long_template = build_long_context_template(refs)
-            sampled_long = _sample_state(model, vocab_sizes, ref_state=long_template, num_steps=num_steps, device=dev)
+            if sampler_mode == "dfm":
+                sampled_long = sample_fn(
+                    model,
+                    vocab_sizes,
+                    ref_state=long_template,
+                    num_steps=num_steps,
+                    device=dev,
+                )
+            else:
+                sampled_long = sample_fn(model, ref_state=long_template, num_steps=num_steps, device=dev)
             out.append(generate_whole_song([sampled_long], mode="long_context"))
             continue
 
         if whole_song_mode == "stitching_baseline":
             refs = [ds[(i * whole_song_segments + k) % len(ds)] for k in range(whole_song_segments)]
-            segments = [_sample_state(model, vocab_sizes, ref_state=ref, num_steps=num_steps, device=dev) for ref in refs]
+            if sampler_mode == "dfm":
+                segments = [
+                    sample_fn(model, vocab_sizes, ref_state=ref, num_steps=num_steps, device=dev)
+                    for ref in refs
+                ]
+            else:
+                segments = [sample_fn(model, ref_state=ref, num_steps=num_steps, device=dev) for ref in refs]
             out.append(generate_whole_song(segments, mode="stitching_baseline"))
             continue
 

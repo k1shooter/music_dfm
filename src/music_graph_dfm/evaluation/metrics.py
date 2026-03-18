@@ -169,6 +169,7 @@ def graph_validity_metrics(state: FSNTGV2State) -> Dict[str, float]:
             invalid_template += 1
     return {
         "host_uniqueness": host_uniqueness(state),
+        "host_validity": 1.0 - (invalid_host / max(1, active)),
         "invalid_host_rate": invalid_host / max(1, active),
         "invalid_template_rate": invalid_template / max(1, active),
     }

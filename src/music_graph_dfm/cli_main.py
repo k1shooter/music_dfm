@@ -8,21 +8,17 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from music_graph_dfm.config import load_yaml
 from music_graph_dfm.evaluation.pipeline import (
     evaluate_checkpoint,
     evaluate_reference_split,
     evaluate_sample_directory,
 )
-from music_graph_dfm.preprocess import PreprocessConfig, preprocess_pop909
+from music_graph_dfm.preprocessing import PreprocessConfig, preprocess_pop909
 from music_graph_dfm.training.runner import generate_samples_from_checkpoint, run_training
 from music_graph_dfm.utils.io import save_json, write_jsonl
 from music_graph_dfm.utils.midi import save_state_midi
-
-
-def _load_yaml(path: Path) -> dict:
-    import yaml
-
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+from music_graph_dfm.visualization import visualize_sample_directory
 
 
 def cmd_download_pop909(args: argparse.Namespace) -> None:
@@ -58,7 +54,7 @@ def cmd_preprocess(args: argparse.Namespace) -> None:
 
 
 def cmd_train(args: argparse.Namespace) -> None:
-    cfg = _load_yaml(Path(args.config))
+    cfg = load_yaml(Path(args.config))
     if args.data_root:
         cfg["data_root"] = args.data_root
     if args.mode:
@@ -81,6 +77,7 @@ def cmd_sample(args: argparse.Namespace) -> None:
         num_samples=args.num_samples,
         num_steps=args.num_steps,
         device=args.device,
+        sampler_mode=args.sampler_mode,
         whole_song_mode=args.whole_song_mode,
         whole_song_segments=args.whole_song_segments,
     )
@@ -115,6 +112,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
             num_samples=args.num_samples,
             num_steps=args.num_steps,
             device=args.device,
+            sampler_mode=args.sampler_mode,
             out_dir=Path(args.sample_out_dir).expanduser().resolve(),
             out_path=out_path,
         )
@@ -139,6 +137,13 @@ def cmd_eval(args: argparse.Namespace) -> None:
         print(json.dumps({"saved": str(out_path), "mode": args.eval_mode}, indent=2))
 
 
+def cmd_visualize(args: argparse.Namespace) -> None:
+    sample_dir = Path(args.sample_dir).expanduser().resolve()
+    out = Path(args.out).expanduser().resolve()
+    out_path = visualize_sample_directory(sample_dir=sample_dir, out_path=out)
+    print(json.dumps({"summary": str(out_path)}, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="music-graph-dfm")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -151,7 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_pre = sub.add_parser("preprocess", help="Preprocess POP909 to FSNTG-v2 cache")
     p_pre.add_argument("--raw-root", type=str, default="data/raw/POP909-Dataset/POP909")
     p_pre.add_argument("--output-root", type=str, default="data/cache/pop909_fsntg_v2")
-    p_pre.add_argument("--span-resolution", type=str, choices=["beat", "half_bar", "bar"], default="beat")
+    p_pre.add_argument(
+        "--span-resolution",
+        type=str,
+        choices=["beat", "half_bar", "bar"],
+        default="beat",
+    )
     p_pre.add_argument("--top-k-per-meter", type=int, default=64)
     p_pre.add_argument("--onset-bins", type=int, default=8)
     p_pre.add_argument("--max-extension-class", type=int, default=4)
@@ -176,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sample.add_argument("--num-steps", type=int, default=96)
     p_sample.add_argument("--device", type=str, default="cpu")
     p_sample.add_argument("--out-dir", type=str, default="artifacts/samples")
+    p_sample.add_argument("--sampler-mode", type=str, default="dfm", choices=["dfm", "editflow"])
     p_sample.add_argument("--export-midi", action="store_true")
     p_sample.add_argument(
         "--whole-song-mode",
@@ -187,7 +198,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_sample.set_defaults(func=cmd_sample)
 
     p_eval = sub.add_parser("eval", help="Evaluate generated samples")
-    p_eval.add_argument("--eval-mode", type=str, choices=["checkpoint", "sample-dir", "reference"], default="checkpoint")
+    p_eval.add_argument(
+        "--eval-mode",
+        type=str,
+        choices=["checkpoint", "sample-dir", "reference"],
+        default="checkpoint",
+    )
     p_eval.add_argument("--checkpoint", type=str, default="")
     p_eval.add_argument("--sample-dir", type=str, default="artifacts/samples")
     p_eval.add_argument("--sample-out-dir", type=str, default="artifacts/eval_samples")
@@ -196,8 +212,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--num-samples", type=int, default=16)
     p_eval.add_argument("--num-steps", type=int, default=96)
     p_eval.add_argument("--device", type=str, default="cpu")
+    p_eval.add_argument("--sampler-mode", type=str, default="dfm", choices=["dfm", "editflow"])
     p_eval.add_argument("--out", type=str, default="artifacts/eval_report.json")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_viz = sub.add_parser("visualize", help="Summarize generated sample directory")
+    p_viz.add_argument("--sample-dir", type=str, default="artifacts/samples")
+    p_viz.add_argument("--out", type=str, default="artifacts/visualization_summary.json")
+    p_viz.set_defaults(func=cmd_visualize)
 
     return parser
 

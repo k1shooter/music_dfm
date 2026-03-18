@@ -14,6 +14,33 @@ This refactor enforces the factorized state:
 
 Dense note-span adjacency is no longer the diffusion state. It is a deterministic derived view from `(host, template)`.
 
+## Repository Structure
+
+```
+repo/
+  pyproject.toml
+  uv.lock
+  README.md
+  src/music_graph_dfm/
+    __init__.py
+    cli/
+    config/
+    data/
+    preprocessing/
+    representation/
+    models/
+    diffusion/
+    samplers/
+    guidance/
+    evaluation/
+    visualization/
+    utils/
+  configs/
+  docs/
+  tests/
+  examples/
+```
+
 ## Install
 
 ```bash
@@ -66,6 +93,13 @@ uv run music-graph-dfm train --config configs/train/default.yaml
 uv run music-graph-dfm train --config configs/train/editflow.yaml
 ```
 
+Posterior/progress-like baselines:
+
+```bash
+uv run music-graph-dfm train --config configs/train/posterior.yaml
+uv run music-graph-dfm train --config configs/train/progress_like.yaml
+```
+
 ### 5) Sample
 
 ```bash
@@ -74,6 +108,14 @@ uv run music-graph-dfm sample \
   --data-root data/cache/pop909_fsntg_v2 \
   --num-samples 16 \
   --export-midi
+```
+
+EditFlow sampler:
+
+```bash
+uv run music-graph-dfm sample \
+  --checkpoint artifacts/checkpoints_editflow/epoch_20.pt \
+  --sampler-mode editflow
 ```
 
 Whole-song modes are explicit:
@@ -102,6 +144,7 @@ From checkpoint (generation included):
 uv run music-graph-dfm eval \
   --eval-mode checkpoint \
   --checkpoint artifacts/checkpoints/epoch_20.pt \
+  --sampler-mode dfm \
   --data-root data/cache/pop909_fsntg_v2
 ```
 
@@ -120,6 +163,14 @@ Reference-only sanity mode:
 uv run music-graph-dfm eval \
   --eval-mode reference \
   --data-root data/cache/pop909_fsntg_v2
+```
+
+### 7) Visualize sample directory
+
+```bash
+uv run music-graph-dfm visualize \
+  --sample-dir artifacts/samples \
+  --out artifacts/visualization_summary.json
 ```
 
 ## Tests
