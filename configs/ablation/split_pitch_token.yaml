@@ -1,0 +1,3 @@
+# Optional ablation: represent pitch token as split degree/register channels.
+enabled: false
+mode: split_degree_register

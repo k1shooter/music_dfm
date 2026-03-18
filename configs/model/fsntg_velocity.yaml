@@ -1,0 +1,15 @@
+name: fsntg_velocity
+full_graph_mode: fsntg_velocity
+baseline_graph_mode: null
+
+hidden_dim: 256
+num_layers: 6
+num_heads: 8
+dropout: 0.1
+parameterization: velocity
+use_long_context_block: false
+
+loss:
+  beta_aux: 0.2
+  gamma_music: 0.15
+  compat_loss: true

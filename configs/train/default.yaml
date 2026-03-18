@@ -1,0 +1,20 @@
+max_epochs: 40
+log_every: 20
+save_every: 1
+learning_rate: 2e-4
+weight_decay: 1e-4
+
+curriculum:
+  enabled: true
+  context_spans: [8, 16, 32]
+  switch_epoch: [0, 10, 20]
+
+wandb:
+  enabled: false
+  project: music_graph_dfm
+
+tensorboard:
+  enabled: true
+  log_dir: tb
+
+use_edit_ops: false

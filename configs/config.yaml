@@ -1,0 +1,21 @@
+defaults:
+  - data: pop909
+  - model: fsntg_velocity
+  - diffusion: mixture
+  - train: default
+  - eval: default
+  - _self_
+
+seed: 7
+mode: train
+project_name: music_graph_dfm
+output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+device: cuda
+num_workers: 2
+
+hydra:
+  run:
+    dir: ${output_dir}
+  job:
+    chdir: true

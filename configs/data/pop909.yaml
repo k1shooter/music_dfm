@@ -1,0 +1,20 @@
+name: pop909
+raw_root: data/raw/POP909-Dataset/POP909
+cache_root: data/cache/pop909_fsntg
+
+download:
+  enabled: false
+  force: false
+
+preprocess:
+  enabled: false
+  top_k_per_meter: 32
+  onset_bins: 32
+  split_seed: 7
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  include_nonlocal_span_edges: true
+
+loader:
+  batch_size: 4
+  shuffle: true

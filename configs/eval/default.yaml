@@ -1,0 +1,4 @@
+batch_size: 4
+num_samples: 16
+compute_reference_metrics: true
+output_report: eval_report.json
