@@ -5,10 +5,10 @@ num_workers: 0
 data_root: data/cache/pop909_fsntg_v2
 
 model:
-  kind: full
-  hidden_dim: 256
-  num_layers: 6
-  num_heads: 8
+  kind: baseline
+  hidden_dim: 192
+  num_layers: 2
+  num_heads: 4
   dropout: 0.1
 
 diffusion:
@@ -35,4 +35,4 @@ train:
   beta_aux: 0.2
   beta_host: 0.1
   save_every: 1
-  checkpoint_dir: artifacts/checkpoints
+  checkpoint_dir: artifacts/checkpoints_baseline

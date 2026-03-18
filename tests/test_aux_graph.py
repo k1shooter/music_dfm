@@ -1,30 +1,44 @@
-from music_graph_dfm.data.fsntg import empty_state, reconstruct_aux_graph
-from music_graph_dfm.data.pitch_codec import PitchTokenCodec
-from music_graph_dfm.templates.rhythm_templates import RhythmTemplateVocab
+from music_graph_dfm.representation.pitch_codec import PitchTokenCodec
+from music_graph_dfm.representation.rhythm_templates import RhythmTemplateVocab
+from music_graph_dfm.representation.state import FSNTGV2State, reconstruct_aux_graph
 
 
-def test_aux_graph_reconstruction():
-    vocab = RhythmTemplateVocab(top_k_per_meter=8)
-    vocab.fit(
+def test_aux_graph_reconstruction_uses_decoded_timing():
+    rhythm = RhythmTemplateVocab(top_k_per_meter=16, onset_bins=8)
+    rhythm.fit(
         [
-            (0, 0, 3, 0, 0),
-            (0, 0, 3, 0, 0),
-            (0, 4, 3, 0, 0),
+            (4, 0, 3, 0, 0),
+            (4, 0, 3, 0, 0),
+            (4, 3, 3, 0, 0),
         ]
     )
-    t_same = vocab.encode(0, 0, 3, 0, 0)
-    t_next = vocab.encode(0, 4, 3, 0, 0)
+    t_same = rhythm.encode(4, 0, 3, 0, 0)
+    t_later = rhythm.encode(4, 3, 3, 0, 0)
 
-    st = empty_state(num_spans=2, num_notes=3)
-    st.note_attrs["active"] = [1, 1, 1]
-    st.note_attrs["pitch_token"] = [1, 2, 3]
-    st.note_attrs["velocity"] = [8, 8, 8]
-    st.note_attrs["role"] = [0, 0, 0]
-    st.e_ns[0][0] = t_same
-    st.e_ns[1][0] = t_same
-    st.e_ns[2][0] = t_next
+    codec = PitchTokenCodec()
+    token = codec.encode(0, 0)
 
-    g = reconstruct_aux_graph(st, vocab, PitchTokenCodec())
+    state = FSNTGV2State(
+        span_attrs={
+            "key": [0, 0],
+            "harm": [0, 0],
+            "meter": [4, 4],
+            "section": [0, 0],
+            "reg_center": [4, 4],
+        },
+        note_attrs={
+            "active": [1, 1, 1],
+            "pitch_token": [token, token, token],
+            "velocity": [8, 8, 8],
+            "role": [0, 0, 0],
+        },
+        host=[1, 1, 1],
+        template=[t_same, t_same, t_later],
+        e_ss=[[0, 1], [0, 0]],
+        span_starts=[0, 480],
+        ticks_per_span=480,
+    )
 
-    assert (0, 1) in g.same_onset or (1, 0) in g.same_onset
-    assert len(g.sequential_same_role) >= 1
+    graph = reconstruct_aux_graph(state, rhythm, codec)
+    assert (0, 1) in graph.same_onset or (1, 0) in graph.same_onset
+    assert len(graph.sequential_same_role) >= 1

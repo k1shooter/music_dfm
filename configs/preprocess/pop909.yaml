@@ -1,0 +1,10 @@
+raw_root: data/raw/POP909-Dataset/POP909
+output_root: data/cache/pop909_fsntg_v2
+span_resolution: beat
+top_k_per_meter: 64
+onset_bins: 8
+max_extension_class: 4
+split_seed: 7
+train_ratio: 0.8
+valid_ratio: 0.1
+min_notes_per_song: 16

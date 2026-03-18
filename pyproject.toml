@@ -1,60 +1,43 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "music-graph-dfm"
-version = "0.1.0"
-description = "Factorized Span-Note Template Graph Discrete Flow Matching for symbolic music generation"
+version = "0.2.0"
+description = "Graph-based discrete flow matching and edit-flow for symbolic music generation"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [
-  {name = "music_graph_dfm contributors"}
-]
+authors = [{name = "music_graph_dfm contributors"}]
 dependencies = [
   "torch>=2.2",
   "numpy>=1.24",
-  "hydra-core>=1.3",
-  "omegaconf>=2.3",
   "pyyaml>=6.0",
   "tqdm>=4.66",
-  "networkx>=3.0",
-  "matplotlib>=3.8",
-  "pandas>=2.0",
-  "scikit-learn>=1.4",
   "miditoolkit>=1.0",
-  "pretty_midi>=0.2",
-  "music21>=9.0",
-  "tensorboard>=2.16",
+  "pandas>=2.0",
 ]
 
 [project.optional-dependencies]
-pyg = [
-  "torch-geometric>=2.5"
-]
-audio = [
-  "pyfluidsynth>=1.3"
-]
-wandb = [
-  "wandb>=0.17"
-]
 dev = [
   "pytest>=8.0",
   "ruff>=0.6",
-  "mypy>=1.10"
+  "mypy>=1.10",
 ]
 
+[project.scripts]
+music-graph-dfm = "music_graph_dfm.cli:main"
+
 [tool.setuptools]
-package-dir = {"" = "."}
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["music_graph_dfm*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
 addopts = "-q"
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100

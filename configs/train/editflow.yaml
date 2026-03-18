@@ -1,23 +1,38 @@
-max_epochs: 40
-log_every: 20
-save_every: 1
-learning_rate: 2e-4
-weight_decay: 1e-4
+seed: 7
+device: cpu
+num_workers: 0
 
-curriculum:
-  enabled: true
-  context_spans: [8, 16, 32]
-  switch_epoch: [0, 10, 20]
+data_root: data/cache/pop909_fsntg_v2
 
-wandb:
-  enabled: false
-  project: music_graph_dfm
+model:
+  kind: full
+  hidden_dim: 256
+  num_layers: 6
+  num_heads: 8
+  dropout: 0.1
 
-tensorboard:
-  enabled: true
-  log_dir: tb
+diffusion:
+  path_type: mixture
+  schedule:
+    span_shift: 0.18
+    span_relation_shift: 0.36
+    placement_shift: 0.56
+    note_shift: 0.74
+    temperature: 0.12
+  prior:
+    active_on_prob: 0.18
+    template_on_prob: 0.22
+    e_ss_non_none_prob: 0.05
+  graph_kernel:
+    enabled: false
 
-use_edit_ops: true
-edit:
-  p_insert: 0.20
-  p_delete: 0.20
+train:
+  mode: editflow
+  epochs: 20
+  batch_size: 4
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  beta_aux: 0.0
+  beta_host: 0.0
+  save_every: 1
+  checkpoint_dir: artifacts/checkpoints_editflow

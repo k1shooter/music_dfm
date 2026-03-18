@@ -1,21 +1,28 @@
-from music_graph_dfm.data.fsntg import empty_state
-from music_graph_dfm.diffusion.edit_ops import (
-    delete_note,
-    insert_note,
-    substitute_note_content,
-    substitute_note_span_template,
-    validate_state_consistency,
-)
+from music_graph_dfm.diffusion.edit_flow import apply_edit_move, derive_oracle_edit_move
+from music_graph_dfm.representation.state import empty_state
 
 
-def test_edit_ops_consistency():
-    st = empty_state(num_spans=3, num_notes=1)
-    st.note_attrs["active"][0] = 1
-    st.e_ns[0][0] = 1
+def test_edit_flow_oracle_and_transition_validity():
+    target = empty_state(num_spans=2, num_notes=2)
+    target.note_attrs["active"] = [1, 1]
+    target.note_attrs["pitch_token"] = [3, 5]
+    target.note_attrs["velocity"] = [8, 9]
+    target.note_attrs["role"] = [0, 1]
+    target.host = [1, 2]
+    target.template = [2, 3]
 
-    st = insert_note(st, host_span=2, template_id=1, pitch_token=2, velocity_bin=8, role=0)
-    st = substitute_note_content(st, note_idx=0, pitch_token=3)
-    st = substitute_note_span_template(st, note_idx=0, host_span=1, template_id=2)
-    st = delete_note(st, note_idx=1)
+    source = empty_state(num_spans=2, num_notes=1)
+    source.note_attrs["active"] = [1]
+    source.note_attrs["pitch_token"] = [3]
+    source.note_attrs["velocity"] = [8]
+    source.note_attrs["role"] = [0]
+    source.host = [1]
+    source.template = [2]
 
-    assert validate_state_consistency(st)
+    move = derive_oracle_edit_move(source, target)
+    assert move is not None
+
+    updated = apply_edit_move(source, move)
+    assert updated.num_notes == 2
+    assert updated.note_attrs["active"][1] == 1
+    assert updated.host[1] == 2

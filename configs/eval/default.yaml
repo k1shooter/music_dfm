@@ -1,4 +1,7 @@
-batch_size: 4
+mode: checkpoint
+split: test
 num_samples: 16
-compute_reference_metrics: true
-output_report: eval_report.json
+num_steps: 96
+device: cpu
+sample_out_dir: artifacts/eval_samples
+report_out: artifacts/eval_report.json

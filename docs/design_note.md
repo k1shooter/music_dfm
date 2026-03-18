@@ -1,129 +1,140 @@
-# FSNTG Design Note (Math -> Code)
+# FSNTG-v2 Design Note
 
 ## Representation
 
-State is implemented as a product discrete space:
+State:
 
-- `X_S` (span channels): `key, harm, meter, section, reg_center`
-- `X_N` (note channels): `active, pitch_token, velocity, role`
-- `X_E_NS` (note-span template edges): `none | template_id`
-- `X_E_SS` (span relations): `none | next | repeat | variation | contrast | modulation`
+`X = (S, N, H, Q, E_SS)`
 
-Code:
+- `S`: span channels `key, harm, meter, section, reg_center`
+- `N`: note channels `active, pitch_token, velocity, role`
+- `H`: `host[i] in {0..J}` (`0` means inactive/no-host)
+- `Q`: `template[i] in {0..|Q|}` (`0` means inactive/no-template)
+- `E_SS`: span-span relation matrix in `{none,next,repeat,variation,contrast,modulation}`
 
-- `music_graph_dfm/data/fsntg.py`
-- `music_graph_dfm/templates/rhythm_templates.py`
-- `music_graph_dfm/data/pitch_codec.py`
+Primary diffusion coordinates are factorized channels, not dense note-span edges.
 
-## Deterministic Auxiliary Graph
+## Pitch Token (Harmony-Relative)
 
-Local note-note relations are not diffusion coordinates. They are rebuilt from the sampled graph:
+`pitch_token` is a flattened categorical over:
 
-- same-onset
-- overlap
-- sequential within role
+- `degree_wrt_harmony`
+- `register_offset`
 
-Code:
+Encoding is relative to host-span harmony root (`span.harm`), not key tonic.
 
-- `reconstruct_aux_graph` in `music_graph_dfm/data/fsntg.py`
-- `reconstruct_aux_relations` in `music_graph_dfm/models/hetero_fsntg_transformer.py`
+Provided API:
 
-## Forward Path and Scheduling
+- `encode_pitch_token(...)`
+- `decode_pitch_token(...)`
+- `PitchTokenCodec.compatibility_table(...)`
+- `PitchTokenCodec.absolute_pitch(...)`
 
-Default path is coordinate-wise mixture:
+## Rhythmic Templates
 
-\[
-q_t^c(x_t^c|x_0^c,x_1^c)=(1-\kappa_c(t))\delta_{x_0^c}+\kappa_c(t)\delta_{x_1^c}
-\]
+Each template stores:
 
-with structure-first order (`span > e_ss > e_ns > note`).
+- `onset_bin`
+- `duration_class`
+- `tie_flag`
+- `extension_class`
 
-Code:
+Decode uses all fields:
 
-- `music_graph_dfm/diffusion/schedules.py`
-- `music_graph_dfm/diffusion/paths.py`
-- `music_graph_dfm/diffusion/state_ops.py`
+`duration = base_duration + tie_bonus + extension_class * ticks_per_span`
 
-Optional generalized graph-kernel path hooks are also provided (`paths.py`).
+## Deterministic Auxiliary Note Graph
 
-## Reverse Generator / Velocity Parameterization
+Note-note relations are rebuilt from decoded timing only:
 
-Model outputs per coordinate channel:
+- `same_onset`
+- `overlap`
+- `sequential_same_role`
 
-\[
-R_t^\theta(X\to X^{c\leftarrow v}) = \lambda_c^\theta(X_t,D(X_t),t)\,\pi_c^\theta(v|X_t,D(X_t),t)
-\]
+No template-id arithmetic is used as a structural proxy.
 
-where `lambda` is positive via softplus and `pi` is categorical via softmax.
+## Forward Path and Target Rates
 
-Code:
+Default path is coordinate-wise mixture with structure-first scheduling:
 
-- `music_graph_dfm/models/hetero_fsntg_transformer.py`
-- separate heads for each channel and edge family
+1. span channels
+2. span relations
+3. placement (`host/template`)
+4. note content
 
-## Loss
+Graph-kernel mode is optional for `span.harm` / `note.pitch_token` and marked approximate.
 
-Implemented objective:
+Approximate target rate for graph-kernel mode uses kernel-derived target distributions and off-diagonal Poisson matching.
 
-\[
-L = L_{rate} + \beta L_{aux} + \gamma L_{music}
-\]
+## Reverse Generator and CTMC Sampler
 
-with:
+Per coordinate:
 
-- rate matching (`L_rate`)
-- auxiliary denoising CE (`L_aux`)
-- music regularizers (`L_music`): host uniqueness, harmonic compatibility, duplicate penalty, voice-leading penalty, repetition consistency
+`R_t^theta(x->x^{c<-v}) = lambda_c * pi_c(v)`
 
-Code:
+Implementation details:
 
-- `music_graph_dfm/diffusion/losses.py`
+1. `lambda = softplus(...)`
+2. `pi = softmax(...)`
+3. zero current category
+4. renormalize on `v != current`
+5. `p_jump = 1 - exp(-h * lambda)`
+6. jump Bernoulli
+7. if jump: sample from off-diagonal `pi`
 
-## Sampling
+Stay probability is hazard-induced only.
 
-Always-valid CTMC jump step:
+## Masking Rules
 
-\[
-P(\text{stay}) = e^{-h\lambda_c},\quad
-P(\text{jump to }v)=(1-e^{-h\lambda_c})\pi_c(v)
-\]
+- losses ignore padded coordinates via coordinate masks
+- sampling updates ignore padded coordinates
+- `host/template` are forced to zero for inactive or padded notes
 
-Code:
+## Edit-Flow Extension
 
-- `music_graph_dfm/samplers/ctmc_sampler.py`
+Separate edit CTMC coordinates:
 
-Post-sampling projections:
-
-- one host per active note
-- duplicate note cleanup
-
-Code:
-
-- `project_one_host_per_active_note` and `cleanup_duplicate_notes` in `music_graph_dfm/data/fsntg.py`
-
-## EditFlow Extension
-
-Optional edit CTMC includes:
-
-- insert note + note-span edge
+- insert note
 - delete note
 - substitute note content
-- substitute note-span template
-- substitute span-span relation
+- substitute host
+- substitute template
+- substitute span relation
 
-Code:
+Includes:
 
-- `music_graph_dfm/diffusion/edit_ops.py`
-- enabled in `scripts/train_fsntg_editflow.py`
+- edit-state definition
+- edit-rate heads (`forward_edit`)
+- edit sampler (`sample_edit_ctmc_step`)
+- edit training objective (`editflow_rate_loss`)
 
-## End-to-End Automation
+This is separate from fixed-slot DFM training.
 
-- Download: `scripts/download_pop909.py`
-- Preprocess: `scripts/preprocess_fsntg.py`
-- Train DFM: `scripts/train_fsntg_dfm.py`
-- Train EditFlow: `scripts/train_fsntg_editflow.py`
-- Sample: `scripts/sample_graph.py`, `scripts/sample_whole_song.py`
-- Evaluate: `scripts/eval_fsntg.py`
-- Vocab stats: `scripts/print_template_vocab_stats.py`
-- Visualization: `scripts/visualize_training_example.py`
-- Baseline comparison: `scripts/compare_fsntg_vs_flat.py`
+## Evaluation Protocol
+
+Evaluation modes:
+
+1. checkpoint -> generation -> metrics
+2. pre-generated sample directory
+3. reference-only sanity mode
+
+Metrics include:
+
+- OOK
+- chord accuracy/similarity
+- groove similarity
+- note density
+- host uniqueness
+- duplicate note rate
+- invalid decode rate
+- voice-leading large-leap penalty
+- span relation accuracy
+- phrase repetition consistency
+- direct symbolic and whole-song metrics
+- graph validity metrics
+
+## Approximations
+
+- graph-kernel target rates are approximate in current implementation
+- section/repetition heuristics are rule-based
+- harmony compatibility uses a lightweight consonance + key-scale rule

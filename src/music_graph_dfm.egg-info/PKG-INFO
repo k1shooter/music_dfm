@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: music-graph-dfm
+Version: 0.2.0
+Summary: Graph-based discrete flow matching and edit-flow for symbolic music generation
+Author: music_graph_dfm contributors
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.2
+Requires-Dist: numpy>=1.24
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tqdm>=4.66
+Requires-Dist: miditoolkit>=1.0
+Requires-Dist: pandas>=2.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+
 # music_graph_dfm
 
 FSNTG-v2 (Factorized Span-Note Template Graph v2) discrete flow matching and edit-flow for symbolic music generation.

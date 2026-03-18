@@ -1,0 +1,2 @@
+[console_scripts]
+music-graph-dfm = music_graph_dfm.cli:main
