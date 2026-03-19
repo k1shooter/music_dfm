@@ -1,4 +1,4 @@
-# Migration Note: Third-Pass Corrections
+# Migration Note: Fourth-Pass Corrections
 
 This note records the targeted correction pass from partially aligned FSNTG-v2 code to the current implementation.
 
