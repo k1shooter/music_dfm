@@ -99,6 +99,7 @@ def _make_train_state(seed: int) -> dict:
     st.span_attrs["key"] = [0, 0]
     st.span_attrs["harm_root"] = [0, 7]
     st.span_attrs["harm_quality"] = [1, 3]
+    st.span_attrs["harm_function"] = [1, 3]
     st.span_attrs["meter"] = [4, 4]
     st.span_attrs["section"] = [0, 0]
     st.span_attrs["reg_center"] = [4, 4]
@@ -121,7 +122,7 @@ def test_editflow_rejects_multistep_source_by_default(tmp_path: Path):
     pitch = PitchTokenCodec()
     (data_root / "rhythm_templates.json").write_text(json.dumps(rhythm.to_dict()), encoding="utf-8")
     (data_root / "pitch_codec.json").write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
-    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v2"}), encoding="utf-8")
+    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v3"}), encoding="utf-8")
     (data_root / "preprocessing_config.json").write_text(json.dumps({"span_resolution": "beat"}), encoding="utf-8")
 
     cfg = {
@@ -158,7 +159,7 @@ def test_editflow_rejects_multistep_source_by_default(tmp_path: Path):
         run_training(cfg)
 
 
-def test_editflow_multistep_segment_smoke(tmp_path: Path):
+def test_editflow_multistep_expanded_smoke(tmp_path: Path):
     data_root = tmp_path / "cache"
     _write_jsonl(data_root / "train.jsonl", [_make_train_state(0), _make_train_state(1), _make_train_state(2)])
     _write_jsonl(data_root / "valid.jsonl", [_make_train_state(3)])
@@ -168,7 +169,7 @@ def test_editflow_multistep_segment_smoke(tmp_path: Path):
     pitch = PitchTokenCodec()
     (data_root / "rhythm_templates.json").write_text(json.dumps(rhythm.to_dict()), encoding="utf-8")
     (data_root / "pitch_codec.json").write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
-    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v2"}), encoding="utf-8")
+    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v3"}), encoding="utf-8")
     (data_root / "preprocessing_config.json").write_text(json.dumps({"span_resolution": "beat"}), encoding="utf-8")
 
     ckpt_dir = tmp_path / "ckpt"
@@ -192,7 +193,7 @@ def test_editflow_multistep_segment_smoke(tmp_path: Path):
         },
         "train": {
             "mode": "editflow",
-            "editflow_mode": "multistep_segment",
+            "editflow_mode": "multistep_expanded",
             "epochs": 1,
             "batch_size": 1,
             "learning_rate": 1e-3,
@@ -206,5 +207,7 @@ def test_editflow_multistep_segment_smoke(tmp_path: Path):
     run_training(cfg)
     payload = torch.load(ckpt_dir / "epoch_1.pt", map_location="cpu")
     extra = payload["extra"]
-    assert extra["editflow_mode"] == "multistep_segment"
+    assert extra["editflow_mode"] == "multistep_expanded"
+    assert extra["editflow_training_objective"].startswith("expanded_state_approximate")
+    assert extra["editflow_objective"].startswith("expanded_state_approximate")
     assert extra["editflow_is_experimental"] is True

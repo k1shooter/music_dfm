@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train edit-flow model."""
+"""Train edit-flow model (one_step_oracle or multistep_expanded)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def main() -> None:
         "--editflow-mode",
         type=str,
         default="one_step_oracle",
-        choices=["one_step_oracle", "multistep_segment"],
+        choices=["one_step_oracle", "multistep_expanded"],
     )
     parser.add_argument("--editflow-source-steps", type=int, default=1)
     parser.add_argument("--allow-multistep-oracle", action="store_true")

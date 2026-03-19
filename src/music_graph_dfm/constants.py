@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-SPAN_CHANNELS = ["key", "harm_root", "harm_quality", "meter", "section", "reg_center"]
+SPAN_CHANNELS = [
+    "key",
+    "harm_root",
+    "harm_quality",
+    "harm_function",
+    "meter",
+    "section",
+    "reg_center",
+]
 NOTE_CHANNELS = ["active", "pitch_token", "velocity", "role"]
 PLACEMENT_CHANNELS = ["host", "template"]
 
@@ -14,6 +22,13 @@ HARM_QUALITY_LABELS = [
     "diminished",
     "augmented",
     "suspended",
+]
+
+HARM_FUNCTION_LABELS = [
+    "unknown",
+    "tonic",
+    "predominant",
+    "dominant",
 ]
 
 SPAN_RELATIONS = [
@@ -43,6 +58,7 @@ COORD_ORDER = [
     "span.key",
     "span.harm_root",
     "span.harm_quality",
+    "span.harm_function",
     "span.meter",
     "span.section",
     "span.reg_center",
@@ -59,6 +75,7 @@ COORD_GROUPS = {
     "span.key": "span",
     "span.harm_root": "span",
     "span.harm_quality": "span",
+    "span.harm_function": "span",
     "span.meter": "span",
     "span.section": "span",
     "span.reg_center": "span",
@@ -71,6 +88,6 @@ COORD_GROUPS = {
     "note.role": "note",
 }
 
-CACHE_SCHEMA_VERSION = "fsntg_v2_pop909_v2"
+CACHE_SCHEMA_VERSION = "fsntg_v2_pop909_v3"
 
 DEFAULT_TICKS_PER_BEAT = 480

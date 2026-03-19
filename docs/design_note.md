@@ -16,7 +16,7 @@ Approximate / experimental parts:
   - target distribution uses kernel-mixture surrogate
   - target rates use off-diagonal Poisson approximation
   - runtime logs and checkpoint/eval metadata explicitly mark this as approximate
-- editflow `multistep_segment` mode is experimental:
+- editflow `multistep_expanded` mode is experimental:
   - supervision uses sampled trajectory segments from forward edit CTMC trajectories
   - this is a tractable approximation to exact expanded-state marginalization
 
@@ -26,13 +26,14 @@ State:
 
 `X = (S, N, H, Q, E_SS)`
 
-- `S`: span channels `key, harm_root, harm_quality, meter, section, reg_center`
+- `S`: span channels `key, harm_root, harm_quality, harm_function, meter, section, reg_center`
 - `N`: note channels `active, pitch_token, velocity, role`
 - `H`: `host[i] in {0..J}` (`0` means inactive/no-host)
 - `Q`: `template[i] in {0..|Q|}` (`0` means inactive/no-template)
 - `E_SS`: span-span relation matrix in `{none,next,repeat,variation,contrast,modulation}`
 
 Primary diffusion coordinates are factorized channels, not dense note-span edges.
+`harm_function` is currently a deterministic POP909 heuristic channel derived from `(key,harm_root,harm_quality)`.
 
 ## Pitch Token (Harmony-Relative)
 
@@ -43,8 +44,9 @@ Primary diffusion coordinates are factorized channels, not dense note-span edges
 - `register_offset`
 
 Encoding is relative to host-span harmony root (`span.harm_root`), not key tonic.
-Decode uses `harm_root` directly for base pitch-class reconstruction and `harm_quality` for chord-tone
-compatibility and degree snapping behavior. Reconstruction is not a simple `(key + degree) mod 12` rule.
+Decode uses `harm_root` directly for base pitch-class reconstruction. `harm_quality` and
+`harm_function` control role-dependent compatibility and degree snapping behavior.
+Reconstruction is not a simple `(key + degree) mod 12` rule.
 
 Provided API:
 
@@ -151,10 +153,11 @@ Training modes:
 - `one_step_oracle` (stable default):
   - source is one forward edit-CTMC step (or optional augmentation)
   - supervise one oracle reverse edit move
-- `multistep_segment` (experimental):
+- `multistep_expanded` (experimental):
   - sample `z_0 -> ... -> z_K` from forward edit CTMC
   - choose adjacent segment `(z_k, z_{k+1})`
   - supervise reverse move from `z_{k+1}` toward `z_k`
+  - objective name in metadata: `expanded_state_approximate_multistep_segment_likelihood`
   - avoids incorrectly supervising a multi-step-corrupted source with a single direct oracle-to-target move
 
 Sampling modes are also separated:
@@ -171,6 +174,12 @@ After every sampling step:
 - invalid host indices are projected to inactive
 
 Derived dense note-span adjacency is materialized only when needed from `(host, template)`.
+
+## Model Options
+
+- `early_sum` (baseline): content and placement embeddings are summed before message passing.
+- `late_fusion` (structure-first option): separate span stream, note placement stream,
+  and note content stream are processed before fusion, then decoded with the same heads.
 
 ## Evaluation Protocol
 
@@ -208,6 +217,7 @@ Decoded-note semantics remain the source of truth. Runtime controls:
 - `train.structure_loss_subsample_notes`
 - `train.structure_loss_subsample_pairs`
 - `train.fast_music_loss_only`
+- `train.full_structure_loss_on_val_only`
 
 When full decoded penalties are skipped by cadence, training logs report full decoded-structure evaluation steps.
 

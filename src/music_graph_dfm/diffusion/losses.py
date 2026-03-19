@@ -170,9 +170,16 @@ def harmonic_compatibility_penalty_from_outputs(
         harm_root = x_t["span.harm_root"][:, span_idx].clamp(min=0, max=compat_table.shape[1] - 1).to(torch.long)
         if compat_table.dim() == 3:
             compat_row = compat_table[key, harm_root, :pitch_vocab]
-        else:
+        elif compat_table.dim() == 4:
             harm_quality = x_t["span.harm_quality"][:, span_idx].clamp(min=0, max=compat_table.shape[2] - 1).to(torch.long)
             compat_row = compat_table[key, harm_root, harm_quality, :pitch_vocab]
+        else:
+            harm_quality = x_t["span.harm_quality"][:, span_idx].clamp(min=0, max=compat_table.shape[2] - 1).to(torch.long)
+            if "span.harm_function" in x_t:
+                harm_function = x_t["span.harm_function"][:, span_idx].clamp(min=0, max=compat_table.shape[3] - 1).to(torch.long)
+            else:
+                harm_function = torch.zeros_like(harm_quality)
+            compat_row = compat_table[key, harm_root, harm_quality, harm_function, :pitch_vocab]
         compat_by_host[:, host, :] = compat_row
 
     compat_note_host = torch.einsum("bht,bnt->bnh", compat_by_host, pitch_prob)

@@ -74,8 +74,17 @@ def ctmc_jump_step(
                 raise AssertionError(f"Off-diagonal CTMC violation on coord={coord}: jump landed on current state.")
 
         x_next[coord] = torch.where(mask, updated, xt)
+        if debug_assertions:
+            if bool(torch.any(x_next[coord][~mask] != xt[~mask]).item()):
+                raise AssertionError(f"Masking violation on coord={coord}: masked coordinates changed.")
 
     x_next = enforce_state_constraints(x_next, batch)
+    if debug_assertions:
+        inactive = x_next["note.active"] == 0
+        if bool(torch.any(x_next["note.host"][inactive] != 0).item()):
+            raise AssertionError("Invariant violation: inactive notes must have host=0.")
+        if bool(torch.any(x_next["note.template"][inactive] != 0).item()):
+            raise AssertionError("Invariant violation: inactive notes must have template=0.")
     return x_next
 
 

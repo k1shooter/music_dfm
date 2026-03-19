@@ -126,16 +126,50 @@ if nn is not None:
             return span_h, note_h
 
 
+    class NoteOnlyBlock(nn.Module):
+        """Note-stream block used by late-fusion mode for content-only processing."""
+
+        def __init__(self, hidden_dim: int, num_heads: int, dropout: float):
+            super().__init__()
+            self.note_attn = nn.MultiheadAttention(hidden_dim, num_heads, dropout=dropout, batch_first=True)
+            self.note_norm = nn.LayerNorm(hidden_dim)
+            self.note_msg = nn.Linear(hidden_dim, hidden_dim)
+            self.note_ffn = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 4),
+                nn.SiLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * 4, hidden_dim),
+            )
+
+        def _agg(self, adj: torch.Tensor, src: torch.Tensor) -> torch.Tensor:
+            deg = adj.sum(dim=-1, keepdim=True).clamp(min=1.0)
+            return adj @ src / deg
+
+        def forward(self, note_h: torch.Tensor, adj_nn: torch.Tensor, note_mask: torch.Tensor) -> torch.Tensor:
+            note_self, _ = self.note_attn(note_h, note_h, note_h, key_padding_mask=~note_mask, need_weights=False)
+            note_from_note = self._agg(adj_nn, note_h)
+            note_h = self.note_norm(note_h + note_self + self.note_msg(note_from_note))
+            note_h = note_h + self.note_ffn(note_h)
+            return note_h * note_mask.unsqueeze(-1)
+
+
     class FSNTGV2HeteroTransformer(nn.Module):
         def __init__(
             self,
             vocab_sizes: Dict[str, int],
             cfg: ModelConfig,
             template_spec: dict | None = None,
+            model_kind: str = "early_sum",
         ):
             super().__init__()
             self.vocab_sizes = vocab_sizes
             self.hidden_dim = cfg.hidden_dim
+            kind = str(model_kind)
+            if kind == "full":
+                kind = "early_sum"
+            if kind not in {"early_sum", "late_fusion"}:
+                raise ValueError("model_kind must be one of: early_sum, late_fusion")
+            self.model_kind = kind
 
             self.span_emb = nn.ModuleDict(
                 {
@@ -158,6 +192,19 @@ if nn is not None:
             self.layers = nn.ModuleList(
                 [HeteroBlock(cfg.hidden_dim, cfg.num_heads, cfg.dropout) for _ in range(cfg.num_layers)]
             )
+            self.fusion_at_layer = max(1, cfg.num_layers // 2)
+            if self.model_kind == "late_fusion":
+                self.content_layers = nn.ModuleList(
+                    [NoteOnlyBlock(cfg.hidden_dim, cfg.num_heads, cfg.dropout) for _ in range(self.fusion_at_layer)]
+                )
+                self.fusion_proj = nn.Sequential(
+                    nn.Linear(cfg.hidden_dim * 2, cfg.hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+                )
+            else:
+                self.content_layers = nn.ModuleList([])
+                self.fusion_proj = nn.Identity()
 
             self.span_heads = nn.ModuleDict(
                 {
@@ -328,12 +375,24 @@ if nn is not None:
 
             span_h = torch.zeros((bsz, s, self.hidden_dim), device=span_mask.device)
             note_h = torch.zeros((bsz, n, self.hidden_dim), device=span_mask.device)
+            note_place = torch.zeros((bsz, n, self.hidden_dim), device=span_mask.device)
+            note_content = torch.zeros((bsz, n, self.hidden_dim), device=span_mask.device)
 
             for channel in SPAN_CHANNELS:
                 span_h = span_h + self.span_emb[channel](batch["span"][channel])
-            for channel in NOTE_CHANNELS:
-                note_h = note_h + self.note_emb[channel](batch["note"][channel])
-            note_h = note_h + self.host_emb(batch["host"]) + self.template_emb(batch["template"])
+            if self.model_kind == "early_sum":
+                for channel in NOTE_CHANNELS:
+                    note_h = note_h + self.note_emb[channel](batch["note"][channel])
+                note_h = note_h + self.host_emb(batch["host"]) + self.template_emb(batch["template"])
+            else:
+                note_place = (
+                    note_place
+                    + self.note_emb["active"](batch["note"]["active"])
+                    + self.host_emb(batch["host"])
+                    + self.template_emb(batch["template"])
+                )
+                for channel in ["pitch_token", "velocity", "role"]:
+                    note_content = note_content + self.note_emb[channel](batch["note"][channel])
 
             if not torch.is_tensor(t):
                 t = torch.tensor(float(t), device=span_h.device)
@@ -341,13 +400,29 @@ if nn is not None:
                 t = t.repeat(bsz)
             temb = self.time_emb(t)
             span_h = span_h + temb[:, None, :]
-            note_h = note_h + temb[:, None, :]
+            if self.model_kind == "early_sum":
+                note_h = note_h + temb[:, None, :]
+            else:
+                note_place = note_place + temb[:, None, :]
+                note_content = note_content + temb[:, None, :]
 
             aux_rel = self._reconstruct_aux_relations(batch)
             adj_ns, adj_ss, adj_nn = self._build_adj(batch, aux_rel)
 
-            for layer in self.layers:
-                span_h, note_h = layer(span_h, note_h, adj_ns, adj_ss, adj_nn, span_mask, note_mask)
+            if self.model_kind == "early_sum":
+                for layer in self.layers:
+                    span_h, note_h = layer(span_h, note_h, adj_ns, adj_ss, adj_nn, span_mask, note_mask)
+            else:
+                fused = None
+                for idx, layer in enumerate(self.layers):
+                    if idx < self.fusion_at_layer:
+                        span_h, note_place = layer(span_h, note_place, adj_ns, adj_ss, adj_nn, span_mask, note_mask)
+                        note_content = self.content_layers[idx](note_content, adj_nn, note_mask)
+                    else:
+                        if fused is None:
+                            fused = self.fusion_proj(torch.cat([note_place, note_content], dim=-1))
+                        span_h, fused = layer(span_h, fused, adj_ns, adj_ss, adj_nn, span_mask, note_mask)
+                note_h = fused if fused is not None else self.fusion_proj(torch.cat([note_place, note_content], dim=-1))
 
             return span_h, note_h, aux_rel
 

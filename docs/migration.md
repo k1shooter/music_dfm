@@ -1,4 +1,4 @@
-# Migration Note: Second-Pass Corrections
+# Migration Note: Third-Pass Corrections
 
 This note records the targeted correction pass from partially aligned FSNTG-v2 code to the current implementation.
 
@@ -8,9 +8,10 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
 |---|---|---|
 | Docs vs code status | README/design note could overstate exactness | Method status now separates trusted vs approximate parts |
 | Harmonic span semantics | Single `harm` channel mixed root/function semantics | Span channels split into `harm_root` + `harm_quality`, propagated through preprocessing/state/model/loss/eval |
+| Harmonic conditioning detail | Harmony conditioning was root/quality only | Added explicit `harm_function` span channel and codec compatibility hooks |
 | Pitch token semantics | API and usage were mixed between component-level and context-level semantics | Primary API is now host-context encode/decode (`abs_pitch <-> token`) with compatibility/projection helpers |
 | CTMC sampler | Degenerate off-diagonal mass could still trigger non-faithful behavior | Degenerate case now forces stay; masked/padded coordinates always stay |
-| Editflow training source process | Multi-step-corrupted sources were supervised with single-step oracle targets | Two explicit modes: stable `one_step_oracle` and experimental `multistep_segment` trajectory supervision |
+| Editflow training source process | Multi-step-corrupted sources were supervised with single-step oracle targets | Two explicit modes: stable `one_step_oracle` and experimental `multistep_expanded` trajectory supervision |
 | Graph-kernel path | Approximation not fully explicit in metadata/reporting | Approximation formula and coordinates are stored in checkpoint/eval metadata; warnings are logged |
 | Developer UX | uv-first workflow in docs/examples | Script-first `python scripts/*.py` workflow with venv+pip primary |
 
@@ -48,11 +49,11 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
     - `nearest_token_projection(...)`
   - decode uses both `harm_root` and `harm_quality` semantics
 - `src/music_graph_dfm/preprocessing/pop909.py`
-  - preprocessing now stores `harm_root` + `harm_quality` span channels and host-context pitch tokens
+  - preprocessing now stores `harm_root` + `harm_quality` + `harm_function` span channels and host-context pitch tokens
 - `src/music_graph_dfm/preprocessing/chords.py`
   - chord parsing now exports harmony root and quality IDs
 - `src/music_graph_dfm/constants.py`
-  - `SPAN_CHANNELS` and coordinate order updated to `harm_root` + `harm_quality`
+  - `SPAN_CHANNELS` and coordinate order updated to `harm_root` + `harm_quality` + `harm_function`
   - graph-kernel approximate coordinates now reference `span.harm_root`
 - `src/music_graph_dfm/diffusion/ctmc.py`
   - strict off-diagonal normalization with explicit degenerate stay behavior
@@ -75,12 +76,14 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
   - graph-kernel target rate approximation wired explicitly for supported coords
   - decoded structure-loss cadence/subsampling knobs added (`structure_loss_every_k_steps`, note/pair subsampling, fast mode)
 - `src/music_graph_dfm/training/runner.py`
-  - editflow mode is explicit (`one_step_oracle` or `multistep_segment`)
-  - multistep mode trains with trajectory-segment supervision over adjacent CTMC states
+  - editflow mode is explicit (`one_step_oracle` or `multistep_expanded`)
+  - multistep mode (`multistep_expanded`) trains with expanded-state approximate trajectory-segment supervision over adjacent CTMC states
   - optional augmentation path preserved under explicit flag
   - graph-kernel approximation metadata added to checkpoints with loud warnings
   - editflow mode/experimental metadata saved in checkpoints and used by sampling paths
   - decoded structure-loss execution cadence logged and recorded in summaries
+- `src/music_graph_dfm/models/hetero_transformer.py`
+  - added `late_fusion` structure-first architecture option while preserving output heads/API
 - `src/music_graph_dfm/evaluation/pipeline.py`
   - checkpoint eval now stores checkpoint metadata in report
   - report includes explicit `experimental` flag and editflow mode metadata

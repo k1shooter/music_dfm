@@ -111,6 +111,26 @@ def _safe_reg_center(pitches: List[int]) -> int:
     return max(0, min(15, int(round((p - 48) / 4.0))))
 
 
+def _derive_harm_function(key: int, harm_root: int, harm_quality: int) -> int:
+    """Lightweight POP909 harmonic-function heuristic.
+
+    Labels:
+    - 0 unknown
+    - 1 tonic
+    - 2 predominant
+    - 3 dominant
+    """
+    degree = (int(harm_root) - int(key)) % 12
+    quality = int(harm_quality)
+    if quality == 3 or degree in {7, 11}:
+        return 3
+    if degree in {2, 5, 9}:
+        return 2
+    if degree in {0, 3, 4, 8}:
+        return 1
+    return 0
+
+
 def _collect_template_records(
     songs: Sequence[Tuple[Path, List[RawNoteEvent], int, int, int]],
     cfg: PreprocessConfig,
@@ -158,6 +178,7 @@ def _build_state(
     key = []
     harm_root = []
     harm_quality = []
+    harm_function = []
     meter = []
     reg_center = []
 
@@ -166,6 +187,7 @@ def _build_state(
         key.append(span_key)
         harm_root.append(span_harm_root)
         harm_quality.append(span_harm_quality)
+        harm_function.append(_derive_harm_function(span_key, span_harm_root, span_harm_quality))
         meter.append(beats_per_bar * 16 + beat_unit)
         pitches = [e.pitch for e in events if e.onset_tick // tps == j]
         reg_center.append(_safe_reg_center(pitches))
@@ -199,6 +221,7 @@ def _build_state(
                 "key": key[span_idx],
                 "harm_root": harm_root[span_idx],
                 "harm_quality": harm_quality[span_idx],
+                "harm_function": harm_function[span_idx],
                 "reg_center": reg_center[span_idx],
             },
         )
@@ -215,6 +238,7 @@ def _build_state(
             "key": key,
             "harm_root": harm_root,
             "harm_quality": harm_quality,
+            "harm_function": harm_function,
             "meter": meter,
             "section": section,
             "reg_center": reg_center,
@@ -309,7 +333,8 @@ def preprocess_pop909(cfg: PreprocessConfig) -> dict:
     stats = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "rhythm_template_vocab_version": "rhythm_templates_v2",
-        "pitch_codec_version": "harmony_relative_root_quality_v3",
+        "pitch_codec_version": "harmony_relative_root_quality_function_v4",
+        "harmonic_semantics_version": "root_quality_function_v1",
         "num_songs": len(states),
         "num_train": len(train),
         "num_valid": len(valid),

@@ -92,15 +92,17 @@ def build_model(vocab_sizes: dict, model_cfg: dict, rhythm_vocab: RhythmTemplate
         num_heads=int(model_cfg.get("num_heads", 8)),
         dropout=float(model_cfg.get("dropout", 0.1)),
     )
-    kind = str(model_cfg.get("kind", "full"))
+    kind = str(model_cfg.get("kind", "early_sum"))
     spec = _template_spec(rhythm_vocab, max(2, int(vocab_sizes["note.template"])))
 
     if kind in {"baseline", "posterior", "progress_like"}:
         return SimpleFactorizedBaseline(vocab_sizes=vocab_sizes, cfg=cfg)
+    model_kind = "early_sum" if kind == "full" else kind
     return FSNTGV2HeteroTransformer(
         vocab_sizes=vocab_sizes,
         cfg=cfg,
         template_spec=spec,
+        model_kind=model_kind,
     )
 
 
@@ -381,6 +383,7 @@ def run_training_dfm(cfg: dict) -> dict:
     structure_loss_subsample_notes = max(0, int(cfg["train"].get("structure_loss_subsample_notes", 0)))
     structure_loss_subsample_pairs = max(0, int(cfg["train"].get("structure_loss_subsample_pairs", 0)))
     fast_music_loss_only = bool(cfg["train"].get("fast_music_loss_only", False))
+    full_structure_loss_on_val_only = bool(cfg["train"].get("full_structure_loss_on_val_only", False))
     epochs = int(ctx["epochs"])
     history = []
     global_step = 0
@@ -390,6 +393,7 @@ def run_training_dfm(cfg: dict) -> dict:
         train_loss = 0.0
         batches = 0
         full_structure_steps = 0
+        full_structure_val_steps = 0
 
         for states in train_loader:
             optimizer.zero_grad(set_to_none=True)
@@ -413,7 +417,11 @@ def run_training_dfm(cfg: dict) -> dict:
 
             loss_rate = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
             loss_aux = auxiliary_denoising_loss(outputs, x1, masks)
-            run_full_structure = (global_step % structure_loss_every_k_steps == 0) and (not fast_music_loss_only)
+            run_full_structure = (
+                (global_step % structure_loss_every_k_steps == 0)
+                and (not fast_music_loss_only)
+                and (not full_structure_loss_on_val_only)
+            )
             loss_structure_dict = music_structure_loss(
                 outputs=outputs,
                 x_t=xt,
@@ -462,6 +470,7 @@ def run_training_dfm(cfg: dict) -> dict:
                 outputs = model(batch_xt, torch.tensor(0.5, device=device))
                 masks = coordinate_masks(batch_xt)
 
+                run_full_structure_val = (not fast_music_loss_only) or bool(full_structure_loss_on_val_only)
                 loss_rate = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
                 loss_aux = auxiliary_denoising_loss(outputs, x1, masks)
                 loss_structure_dict = music_structure_loss(
@@ -472,11 +481,13 @@ def run_training_dfm(cfg: dict) -> dict:
                     rhythm_vocab=rhythm_vocab,
                     pitch_codec=pitch_codec,
                     compat_table=compat_table,
-                    fast_music_loss_only=fast_music_loss_only,
+                    fast_music_loss_only=not run_full_structure_val,
                     structure_loss_subsample_notes=structure_loss_subsample_notes,
                     structure_loss_subsample_pairs=structure_loss_subsample_pairs,
                 )
                 loss_structure = loss_structure_dict["total"]
+                if run_full_structure_val:
+                    full_structure_val_steps += 1
                 loss = loss_rate + beta_aux * loss_aux + beta_structure * loss_structure
 
                 valid_loss += float(loss.item())
@@ -489,8 +500,10 @@ def run_training_dfm(cfg: dict) -> dict:
             "valid_loss": valid_loss,
             "mode": "dfm",
             "structure_loss_full_steps": full_structure_steps,
+            "structure_loss_val_full_steps": full_structure_val_steps,
             "structure_loss_every_k_steps": structure_loss_every_k_steps,
             "fast_music_loss_only": fast_music_loss_only,
+            "full_structure_loss_on_val_only": full_structure_loss_on_val_only,
         }
         history.append(summary)
         print(summary)
@@ -532,22 +545,26 @@ def run_training_editflow(cfg: dict) -> dict:
     source_steps = int(cfg.get("train", {}).get("editflow_source_steps", 1))
     use_random_aug = bool(cfg.get("train", {}).get("editflow_random_augmentation", False))
     allow_multistep_oracle = bool(cfg.get("train", {}).get("allow_multistep_oracle", False))
-    if editflow_mode not in {"one_step_oracle", "multistep_segment"}:
-        raise ValueError("train.editflow_mode must be one of: one_step_oracle, multistep_segment")
+    if editflow_mode == "multistep_segment":
+        # Backward-compatible alias.
+        editflow_mode = "multistep_expanded"
+    if editflow_mode not in {"one_step_oracle", "multistep_expanded"}:
+        raise ValueError("train.editflow_mode must be one of: one_step_oracle, multistep_expanded")
     if editflow_mode == "one_step_oracle" and source_steps != 1 and not allow_multistep_oracle:
         raise ValueError(
             "one-step oracle mode supports source_steps=1 by default. "
             "Set train.editflow_source_steps=1 or enable allow_multistep_oracle for experiments."
         )
-    if editflow_mode == "multistep_segment" and source_steps < 2:
-        raise ValueError("multistep_segment mode requires train.editflow_source_steps >= 2")
-    if editflow_mode == "multistep_segment" and use_random_aug:
-        raise ValueError("editflow_random_augmentation cannot be used with multistep_segment mode")
+    if editflow_mode == "multistep_expanded" and source_steps < 2:
+        raise ValueError("multistep_expanded mode requires train.editflow_source_steps >= 2")
+    if editflow_mode == "multistep_expanded" and use_random_aug:
+        raise ValueError("editflow_random_augmentation cannot be used with multistep_expanded mode")
 
-    if editflow_mode == "multistep_segment":
+    if editflow_mode == "multistep_expanded":
         LOGGER.warning(
-            "EditFlow multistep_segment mode is experimental. "
-            "Supervision uses sampled trajectory segments, not exact full marginalization."
+            "EditFlow multistep_expanded mode is experimental. "
+            "Objective uses expanded-state approximate trajectory-segment supervision; "
+            "it is not exact full marginalization."
         )
 
     def _build_edit_supervision_batch(target_states):
@@ -555,7 +572,7 @@ def run_training_editflow(cfg: dict) -> dict:
         oracle = []
         t_values: list[float] = []
 
-        if editflow_mode == "multistep_segment":
+        if editflow_mode == "multistep_expanded":
             for st in target_states:
                 source_state, prev_state, move, t_value = sample_multistep_supervision_segment(
                     target_state=st,
@@ -651,9 +668,14 @@ def run_training_editflow(cfg: dict) -> dict:
                     "editflow_source_steps": source_steps,
                     "editflow_source_process": "random_augmentation" if use_random_aug else "forward_edit_ctmc",
                     "editflow_is_experimental": bool(editflow_mode != "one_step_oracle"),
+                    "editflow_objective": (
+                        "expanded_state_approximate_multistep_segment_likelihood"
+                        if editflow_mode == "multistep_expanded"
+                        else "one_step_oracle"
+                    ),
                     "editflow_training_objective": (
-                        "trajectory_segment_supervision"
-                        if editflow_mode == "multistep_segment"
+                        "expanded_state_approximate_multistep_segment_likelihood"
+                        if editflow_mode == "multistep_expanded"
                         else "one_step_oracle"
                     ),
                 },
@@ -779,7 +801,7 @@ def generate_samples_from_checkpoint(
         sample_fn = _sample_state
     else:
         editflow_mode = str(ckpt_extra.get("editflow_mode", "one_step_oracle"))
-        if editflow_mode == "multistep_segment":
+        if editflow_mode in {"multistep_segment", "multistep_expanded"}:
             sample_fn = _sample_state_edit_multistep
         else:
             sample_fn = _sample_state_edit_one_step

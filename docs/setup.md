@@ -21,6 +21,16 @@ python scripts/eval.py --help
 python scripts/visualize.py --help
 ```
 
+Typical execution sequence:
+
+```bash
+python scripts/preprocess.py --raw-root data/raw/POP909-Dataset/POP909 --output-root data/cache/pop909_fsntg_v2
+python scripts/train.py --config configs/train/default.yaml
+python scripts/train_editflow.py --config configs/train/editflow.yaml --editflow-mode one_step_oracle
+python scripts/sample.py --checkpoint artifacts/checkpoints/epoch_20.pt --data-root data/cache/pop909_fsntg_v2
+python scripts/eval.py --eval-mode checkpoint --checkpoint artifacts/checkpoints/epoch_20.pt --data-root data/cache/pop909_fsntg_v2
+```
+
 Run tests:
 
 ```bash

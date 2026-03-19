@@ -104,7 +104,16 @@ def main() -> None:
 
     out_path = Path(args.out).expanduser().resolve()
     save_json(out_path, report)
-    print(json.dumps({"saved": str(out_path), "mode": args.eval_mode}, indent=2))
+    summary = {"saved": str(out_path), "mode": args.eval_mode}
+    if isinstance(report, dict):
+        summary["experimental"] = bool(report.get("experimental", False))
+        ckpt_meta = report.get("checkpoint_meta", {})
+        if isinstance(ckpt_meta, dict):
+            summary["graph_kernel_is_approximate"] = bool(ckpt_meta.get("graph_kernel_is_approximate", False))
+            summary["graph_kernel_target_rate_mode"] = ckpt_meta.get("graph_kernel_target_rate_mode", "")
+            summary["editflow_mode"] = ckpt_meta.get("editflow_mode", "")
+            summary["editflow_objective"] = ckpt_meta.get("editflow_objective", "")
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

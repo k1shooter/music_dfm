@@ -5,7 +5,7 @@ num_workers: 0
 data_root: data/cache/pop909_fsntg_v2
 
 model:
-  kind: early_sum
+  kind: late_fusion
   hidden_dim: 256
   num_layers: 6
   num_heads: 8
@@ -40,4 +40,4 @@ train:
   fast_music_loss_only: false
   full_structure_loss_on_val_only: false
   save_every: 1
-  checkpoint_dir: artifacts/checkpoints
+  checkpoint_dir: artifacts/checkpoints_late_fusion

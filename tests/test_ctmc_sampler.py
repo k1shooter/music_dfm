@@ -11,6 +11,7 @@ def _base_state():
         "span.key": torch.ones((1, 2), dtype=torch.long),
         "span.harm_root": torch.ones((1, 2), dtype=torch.long),
         "span.harm_quality": torch.ones((1, 2), dtype=torch.long),
+        "span.harm_function": torch.ones((1, 2), dtype=torch.long),
         "span.meter": torch.ones((1, 2), dtype=torch.long),
         "span.section": torch.ones((1, 2), dtype=torch.long),
         "span.reg_center": torch.ones((1, 2), dtype=torch.long),

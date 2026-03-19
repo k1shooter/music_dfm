@@ -41,8 +41,16 @@ class FSNTGV2State:
     metadata: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self._hydrate_optional_span_channels()
         self.validate_shapes()
         self.project_placement_consistency()
+
+    def _hydrate_optional_span_channels(self) -> None:
+        # Backward-compatible hydration for older cached or hand-crafted states.
+        n = len(self.span_starts)
+        if "harm_root" in self.span_attrs:
+            self.span_attrs.setdefault("harm_quality", [0 for _ in range(n)])
+            self.span_attrs.setdefault("harm_function", [0 for _ in range(n)])
 
     @property
     def num_spans(self) -> int:
@@ -136,6 +144,7 @@ class FSNTGV2State:
                     "key": int(self.span_attrs["key"][span_idx]),
                     "harm_root": int(self.span_attrs["harm_root"][span_idx]),
                     "harm_quality": int(self.span_attrs["harm_quality"][span_idx]),
+                    "harm_function": int(self.span_attrs["harm_function"][span_idx]),
                     "reg_center": int(self.span_attrs["reg_center"][span_idx]),
                 },
             )
@@ -174,6 +183,8 @@ class FSNTGV2State:
             span_attrs["harm_root"] = list(span_attrs.pop("harm"))
         if "harm_quality" not in span_attrs:
             span_attrs["harm_quality"] = [0 for _ in range(len(span_attrs.get("harm_root", [])))]
+        if "harm_function" not in span_attrs:
+            span_attrs["harm_function"] = [0 for _ in range(len(span_attrs.get("harm_root", [])))]
         return cls(
             span_attrs=span_attrs,
             note_attrs={k: list(v) for k, v in payload["note_attrs"].items()},

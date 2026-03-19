@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Tuple
 
-from music_graph_dfm.constants import HARM_QUALITY_LABELS
+from music_graph_dfm.constants import HARM_FUNCTION_LABELS, HARM_QUALITY_LABELS
 
 MAJOR_SCALE_INTERVALS = {0, 2, 4, 5, 7, 9, 11}
 CHORD_TONE_INTERVALS = {0, 3, 4, 7, 10}
@@ -26,6 +26,12 @@ HARMONY_QUALITY_INTERVALS = {
     5: {0, 4, 8},  # augmented
     6: {0, 5, 7},  # suspended
 }
+HARMONIC_FUNCTION_SCALE_INTERVALS = {
+    0: MAJOR_SCALE_INTERVALS,  # unknown
+    1: MAJOR_SCALE_INTERVALS,  # tonic-like
+    2: {0, 2, 3, 5, 7, 9, 10},  # predominant-like
+    3: {0, 2, 4, 5, 7, 9, 10},  # dominant-like / mixolydian flavor
+}
 
 
 @dataclass(frozen=True)
@@ -35,17 +41,23 @@ class PitchToken:
     register_offset: int
 
 
-def _coerce_host_state(host_span_state: Mapping[str, int]) -> tuple[int, int, int, int]:
+def _coerce_host_state(host_span_state: Mapping[str, int]) -> tuple[int, int, int, int, int]:
     key = int(host_span_state.get("key", 0)) % 12
     harmonic_root = int(host_span_state.get("harm_root", host_span_state.get("harm", 0))) % 12
     harm_quality = int(host_span_state.get("harm_quality", 0))
     harm_quality = max(0, min(len(HARM_QUALITY_LABELS) - 1, harm_quality))
+    harm_function = int(host_span_state.get("harm_function", 0))
+    harm_function = max(0, min(len(HARM_FUNCTION_LABELS) - 1, harm_function))
     reg_center = int(host_span_state.get("reg_center", 4))
-    return key, harmonic_root, harm_quality, reg_center
+    return key, harmonic_root, harm_quality, harm_function, reg_center
 
 
 def _quality_intervals(harm_quality: int) -> set[int]:
     return set(HARMONY_QUALITY_INTERVALS.get(int(harm_quality), CHORD_TONE_INTERVALS))
+
+
+def _function_scale_intervals(harm_function: int) -> set[int]:
+    return set(HARMONIC_FUNCTION_SCALE_INTERVALS.get(int(harm_function), MAJOR_SCALE_INTERVALS))
 
 
 def _circular_distance(a: int, b: int, mod: int) -> int:
@@ -142,7 +154,7 @@ class PitchTokenCodec:
         host_span_state: Mapping[str, int],
         role_class: int | None = None,
     ) -> int:
-        key, harmonic_root, harm_quality, reg_center = _coerce_host_state(host_span_state)
+        key, harmonic_root, harm_quality, harm_function, reg_center = _coerce_host_state(host_span_state)
         abs_pitch = int(max(0, min(127, int(abs_pitch))))
         abs_pc = abs_pitch % 12
 
@@ -153,6 +165,7 @@ class PitchTokenCodec:
                 key=key,
                 harmonic_root=harmonic_root,
                 harm_quality=harm_quality,
+                harm_function=harm_function,
                 degree=degree,
             )
 
@@ -173,6 +186,7 @@ class PitchTokenCodec:
                 key=key,
                 harmonic_root=harmonic_root,
                 harm_quality=harm_quality,
+                harm_function=harm_function,
                 reg_center=reg_center,
                 token=token,
             )
@@ -196,22 +210,37 @@ class PitchTokenCodec:
         key: int,
         reg_center: int,
         harm_quality: int = 0,
+        harm_function: int = 0,
     ) -> int:
         return self.encode_pitch_token(
             abs_pitch=int(pitch),
             host_span_state={
                 "harm_root": int(harmonic_root),
                 "harm_quality": int(harm_quality),
+                "harm_function": int(harm_function),
                 "key": int(key),
                 "reg_center": int(reg_center),
             },
         )
 
-    def absolute_pitch(self, key: int, harmonic_root: int, harm_quality: int, reg_center: int, token: int) -> int:
-        """Reconstruct absolute MIDI pitch using harmony-root-relative pitch token."""
+    def absolute_pitch(
+        self,
+        key: int,
+        harmonic_root: int,
+        harm_quality: int,
+        harm_function: int,
+        reg_center: int,
+        token: int,
+    ) -> int:
+        """Reconstruct absolute MIDI pitch using harmony-relative semantics.
+
+        - harmonic root gives base pitch class anchor
+        - role/quality/function determine degree compatibility and snapping
+        """
         key = int(key) % 12
         harmonic_root = int(harmonic_root) % 12
         harm_quality = int(harm_quality)
+        harm_function = int(harm_function)
         reg_center = int(reg_center)
 
         if int(token) == self.pad_token:
@@ -225,6 +254,7 @@ class PitchTokenCodec:
             key=key,
             harmonic_root=harmonic_root,
             harm_quality=harm_quality,
+            harm_function=harm_function,
         )
         pc = (harmonic_root + snapped_degree) % 12
 
@@ -232,16 +262,24 @@ class PitchTokenCodec:
         return _closest_pc_to_center(pc, center)
 
     def decode_pitch_token(self, token: int, host_span_state: Mapping[str, int]) -> int:
-        key, harmonic_root, harm_quality, reg_center = _coerce_host_state(host_span_state)
+        key, harmonic_root, harm_quality, harm_function, reg_center = _coerce_host_state(host_span_state)
         return self.absolute_pitch(
             key=key,
             harmonic_root=harmonic_root,
             harm_quality=harm_quality,
+            harm_function=harm_function,
             reg_center=reg_center,
             token=int(token),
         )
 
-    def is_compatible(self, key: int, harmonic_root: int, harm_quality: int, token: int) -> bool:
+    def is_compatible(
+        self,
+        key: int,
+        harmonic_root: int,
+        harm_quality: int,
+        token: int,
+        harm_function: int = 0,
+    ) -> bool:
         if int(token) == self.pad_token:
             return True
         pt = self.decode_components(token)
@@ -252,22 +290,32 @@ class PitchTokenCodec:
         if int(pt.role_class) == 0:
             return degree in _quality_intervals(harm_quality)
         if int(pt.role_class) == 1:
-            return key_rel in MAJOR_SCALE_INTERVALS
+            return key_rel in _function_scale_intervals(harm_function)
         return True
 
     def compatibility_for_state(self, host_span_state: Mapping[str, int], token: int) -> float:
-        key, harmonic_root, harm_quality, _ = _coerce_host_state(host_span_state)
-        return 1.0 if self.is_compatible(key=key, harmonic_root=harmonic_root, harm_quality=harm_quality, token=int(token)) else 0.0
+        key, harmonic_root, harm_quality, harm_function, _ = _coerce_host_state(host_span_state)
+        return 1.0 if self.is_compatible(
+            key=key,
+            harmonic_root=harmonic_root,
+            harm_quality=harm_quality,
+            token=int(token),
+            harm_function=harm_function,
+        ) else 0.0
 
     def compatibility_table(
         self,
         num_keys: int = 12,
         num_harm_root: int = 12,
         num_harm_quality: int = len(HARM_QUALITY_LABELS),
-    ) -> List[List[List[List[float]]]]:
+        num_harm_function: int = len(HARM_FUNCTION_LABELS),
+    ) -> List[List[List[List[List[float]]]]]:
         table = [
             [
-                [[0.0 for _ in range(self.vocab_size)] for _ in range(num_harm_quality)]
+                [
+                    [[0.0 for _ in range(self.vocab_size)] for _ in range(num_harm_function)]
+                    for _ in range(num_harm_quality)
+                ]
                 for _ in range(num_harm_root)
             ]
             for _ in range(num_keys)
@@ -275,13 +323,15 @@ class PitchTokenCodec:
         for key in range(num_keys):
             for harm_root in range(num_harm_root):
                 for harm_quality in range(num_harm_quality):
-                    for token in range(self.vocab_size):
-                        table[key][harm_root][harm_quality][token] = 1.0 if self.is_compatible(
-                            key,
-                            harm_root,
-                            harm_quality,
-                            token,
-                        ) else 0.0
+                    for harm_function in range(num_harm_function):
+                        for token in range(self.vocab_size):
+                            table[key][harm_root][harm_quality][harm_function][token] = 1.0 if self.is_compatible(
+                                key,
+                                harm_root,
+                                harm_quality,
+                                token,
+                                harm_function,
+                            ) else 0.0
         return table
 
     def to_dict(self) -> dict:
@@ -293,6 +343,7 @@ class PitchTokenCodec:
             "center_base_midi": self.center_base_midi,
             "role_labels": TONAL_ROLE_CLASSES,
             "harm_quality_labels": HARM_QUALITY_LABELS,
+            "harm_function_labels": HARM_FUNCTION_LABELS,
         }
 
     @classmethod
@@ -306,28 +357,37 @@ class PitchTokenCodec:
         )
 
 
-def infer_role_class(abs_pc: int, key: int, harmonic_root: int, harm_quality: int, degree: int) -> int:
+def infer_role_class(abs_pc: int, key: int, harmonic_root: int, harm_quality: int, harm_function: int, degree: int) -> int:
     del harmonic_root
     if int(degree) % 12 in _quality_intervals(harm_quality):
         return 0
-    if (int(abs_pc) - int(key)) % 12 in MAJOR_SCALE_INTERVALS:
+    if (int(abs_pc) - int(key)) % 12 in _function_scale_intervals(harm_function):
         return 1
     return 2
 
 
-def snap_degree_to_role(degree: int, role_class: int, key: int, harmonic_root: int, harm_quality: int) -> int:
+def snap_degree_to_role(
+    degree: int,
+    role_class: int,
+    key: int,
+    harmonic_root: int,
+    harm_quality: int,
+    harm_function: int,
+) -> int:
     degree = int(degree) % 12
     role_class = int(role_class)
     key = int(key) % 12
     harmonic_root = int(harmonic_root) % 12
     harm_quality = int(harm_quality)
+    harm_function = int(harm_function)
     chord_tones = _quality_intervals(harm_quality)
+    function_scale = _function_scale_intervals(harm_function)
 
     if role_class == 0 and degree in chord_tones:
         return degree
     if role_class == 1:
         abs_pc = (harmonic_root + degree) % 12
-        if (abs_pc - key) % 12 in MAJOR_SCALE_INTERVALS:
+        if (abs_pc - key) % 12 in function_scale:
             return degree
     if role_class == 2:
         return degree
@@ -335,7 +395,7 @@ def snap_degree_to_role(degree: int, role_class: int, key: int, harmonic_root: i
     if role_class == 0:
         candidates = list(chord_tones)
     elif role_class == 1:
-        candidates = [d for d in range(12) if ((harmonic_root + d) - key) % 12 in MAJOR_SCALE_INTERVALS]
+        candidates = [d for d in range(12) if ((harmonic_root + d) - key) % 12 in function_scale]
     else:
         candidates = list(range(12))
 

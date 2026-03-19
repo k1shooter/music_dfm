@@ -26,8 +26,9 @@ def ook_rate(state: FSNTGV2State, pitch_codec: PitchTokenCodec) -> float:
         key = int(state.span_attrs["key"][span_idx])
         harm_root = int(state.span_attrs["harm_root"][span_idx])
         harm_quality = int(state.span_attrs["harm_quality"][span_idx])
+        harm_function = int(state.span_attrs.get("harm_function", [0 for _ in range(state.num_spans)])[span_idx])
         token = int(state.note_attrs["pitch_token"][i])
-        if not pitch_codec.is_compatible(key, harm_root, harm_quality, token):
+        if not pitch_codec.is_compatible(key, harm_root, harm_quality, token, harm_function=harm_function):
             bad += 1
     return bad / max(1, total)
 
@@ -118,12 +119,19 @@ def chord_metrics(generated: FSNTGV2State, reference: FSNTGV2State) -> Dict[str,
         g_key = int(generated.span_attrs["key"][i])
         g_harm_root = int(generated.span_attrs["harm_root"][i])
         g_harm_quality = int(generated.span_attrs["harm_quality"][i])
+        g_harm_function = int(generated.span_attrs.get("harm_function", [0 for _ in range(generated.num_spans)])[i])
         r_key = int(reference.span_attrs["key"][i])
         r_harm_root = int(reference.span_attrs["harm_root"][i])
         r_harm_quality = int(reference.span_attrs["harm_quality"][i])
+        r_harm_function = int(reference.span_attrs.get("harm_function", [0 for _ in range(reference.num_spans)])[i])
         if g_harm_root == r_harm_root:
             root_match += 1
-        if g_key == r_key and g_harm_root == r_harm_root and g_harm_quality == r_harm_quality:
+        if (
+            g_key == r_key
+            and g_harm_root == r_harm_root
+            and g_harm_quality == r_harm_quality
+            and g_harm_function == r_harm_function
+        ):
             exact += 1
     return {
         "chord_accuracy": exact / n,

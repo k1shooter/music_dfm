@@ -162,3 +162,51 @@ def test_end_to_end_train_editflow_smoke(tmp_path: Path):
     assert ckpt_path.exists()
     payload = torch.load(ckpt_path, map_location="cpu")
     assert payload["extra"]["editflow_mode"] == "one_step_oracle"
+    assert payload["extra"]["editflow_objective"] == "one_step_oracle"
+
+
+def test_structure_loss_val_only_knob_smoke(tmp_path: Path):
+    data_root = tmp_path / "cache"
+    train_rows = [_make_state(0), _make_state(1), _make_state(2), _make_state(3)]
+    valid_rows = [_make_state(0), _make_state(1)]
+
+    _write_jsonl(data_root / "train.jsonl", train_rows)
+    _write_jsonl(data_root / "valid.jsonl", valid_rows)
+
+    rhythm = RhythmTemplateVocab(top_k_per_meter=8, onset_bins=8)
+    rhythm.fit([(4, 0, 3, 0, 0), (4, 2, 3, 0, 0), (4, 0, 3, 0, 0)])
+    pitch = PitchTokenCodec()
+    (data_root / "rhythm_templates.json").write_text(json.dumps(rhythm.to_dict()), encoding="utf-8")
+    (data_root / "pitch_codec.json").write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
+
+    cfg = {
+        "seed": 7,
+        "device": "cpu",
+        "num_workers": 0,
+        "data_root": str(data_root),
+        "model": {"kind": "early_sum", "hidden_dim": 32, "num_layers": 1, "num_heads": 2, "dropout": 0.0},
+        "diffusion": {
+            "path_type": "mixture",
+            "schedule": {"span_shift": 0.2, "span_relation_shift": 0.35, "placement_shift": 0.55, "note_shift": 0.7, "temperature": 0.2},
+            "prior": {"active_on_prob": 0.2, "template_on_prob": 0.25, "e_ss_non_none_prob": 0.05},
+            "graph_kernel": {"enabled": False},
+        },
+        "train": {
+            "mode": "dfm",
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 1e-3,
+            "weight_decay": 0.0,
+            "beta_aux": 0.1,
+            "beta_structure": 0.1,
+            "structure_loss_every_k_steps": 1,
+            "full_structure_loss_on_val_only": True,
+            "save_every": 2,
+            "checkpoint_dir": str(tmp_path / "ckpt"),
+        },
+    }
+    result = run_training(cfg)
+    final = result["final"]
+    assert final["full_structure_loss_on_val_only"] is True
+    assert final["structure_loss_full_steps"] == 0
+    assert final["structure_loss_val_full_steps"] > 0

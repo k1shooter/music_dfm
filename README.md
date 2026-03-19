@@ -6,11 +6,12 @@ FSNTG-v2 (Factorized Span-Note Template Graph v2) for discrete flow matching and
 
 Trusted:
 - FSNTG-v2 primary state: `X = (S, N, H, Q, E_SS)` with diffusion over
-  - span channels (`key,harm_root,harm_quality,meter,section,reg_center`)
+  - span channels (`key,harm_root,harm_quality,harm_function,meter,section,reg_center`)
   - note channels (`active,pitch_token,velocity,role`)
   - `note.host`, `note.template`
   - `e_ss.relation`
 - deterministic note-note auxiliary graph from decoded timing only (`same_onset`, `overlap`, `sequential_same_role`)
+- POP909 harmonic function channel (`harm_function`) is derived by deterministic rule from key/root/quality
 - CTMC reverse sampler with strict off-diagonal jumps
 - script-first preprocessing/training/sampling/evaluation pipeline
 
@@ -19,7 +20,7 @@ Approximate / experimental:
   - target distribution: `q_t=(1-kappa)delta_x0 + kappa*K[x1,:]`
   - target rate approximation: off-diagonal Poisson matching with `eta*K[x1,v]`
   - this mode logs loud warnings and is saved in checkpoint/sample/eval metadata
-- editflow multistep mode is experimental (`editflow_mode=multistep_segment`)
+- editflow multistep expanded mode is experimental (`editflow_mode=multistep_expanded`)
   - training uses trajectory-segment supervision over adjacent forward-CTMC states
   - this is a tractable approximation to full expanded-state marginalization
 - random edit augmentation remains optional and separately named (`editflow_random_augmentation`), and is not core editflow
@@ -35,8 +36,11 @@ Approximate / experimental:
 - Stable one-step-oracle editflow:
   - explicit edit coordinates + edit heads/loss/sampler, trained with one-step oracle supervision
 - Experimental multistep editflow:
-  - trajectory-segment supervision from forward edit-CTMC trajectories (`multistep_segment`)
+  - expanded-state approximate trajectory supervision from forward edit-CTMC trajectories (`multistep_expanded`)
   - separate multistep edit sampler path at generation time
+- Model architecture options:
+  - `early_sum` (baseline)
+  - `late_fusion` (structure-first stream separation with later fusion)
 
 ## Repository Layout
 
@@ -103,6 +107,7 @@ Structure-loss efficiency knobs are available in config:
 - `train.structure_loss_subsample_notes`
 - `train.structure_loss_subsample_pairs`
 - `train.fast_music_loss_only`
+- `train.full_structure_loss_on_val_only`
 
 ### 4) Train EditFlow
 
@@ -120,7 +125,7 @@ Experimental multistep trajectory-segment mode:
 ```bash
 python scripts/train_editflow.py \
   --config configs/train/editflow.yaml \
-  --editflow-mode multistep_segment \
+  --editflow-mode multistep_expanded \
   --editflow-source-steps 4
 ```
 

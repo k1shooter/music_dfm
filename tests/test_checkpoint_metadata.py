@@ -52,7 +52,7 @@ def test_checkpoint_metadata_roundtrip(tmp_path: Path):
     pitch = PitchTokenCodec()
     (data_root / "rhythm_templates.json").write_text(json.dumps(rhythm.to_dict()), encoding="utf-8")
     (data_root / "pitch_codec.json").write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
-    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v2"}), encoding="utf-8")
+    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v3"}), encoding="utf-8")
     (data_root / "preprocessing_config.json").write_text(json.dumps({"span_resolution": "beat"}), encoding="utf-8")
 
     ckpt_dir = tmp_path / "ckpt"
@@ -110,7 +110,7 @@ def test_checkpoint_metadata_roundtrip(tmp_path: Path):
     assert "graph_kernel_target_rate_mode" in extra
     assert extra["graph_kernel"]["enabled"] is False
     assert extra["graph_kernel"]["approximate"] is False
-    assert extra["data_meta"]["stats"]["schema_version"] == "fsntg_v2_pop909_v2"
+    assert extra["data_meta"]["stats"]["schema_version"] == "fsntg_v2_pop909_v3"
 
     samples = generate_samples_from_checkpoint(
         checkpoint=ckpt_path,
@@ -134,7 +134,7 @@ def test_graph_kernel_warning_and_metadata_propagation(tmp_path: Path, caplog):
     pitch = PitchTokenCodec()
     (data_root / "rhythm_templates.json").write_text(json.dumps(rhythm.to_dict()), encoding="utf-8")
     (data_root / "pitch_codec.json").write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
-    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v2"}), encoding="utf-8")
+    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v3"}), encoding="utf-8")
     (data_root / "preprocessing_config.json").write_text(json.dumps({"span_resolution": "beat"}), encoding="utf-8")
 
     ckpt_dir = tmp_path / "ckpt"

@@ -54,6 +54,7 @@ def main() -> None:
         "graph_kernel_target_rate_mode": ckpt_extra.get("graph_kernel_target_rate_mode", ""),
         "graph_kernel_experimental": bool(ckpt_extra.get("graph_kernel_is_approximate", False)),
         "editflow_mode": ckpt_extra.get("editflow_mode", ""),
+        "editflow_objective": ckpt_extra.get("editflow_objective", ckpt_extra.get("editflow_training_objective", "")),
         "editflow_experimental": bool(ckpt_extra.get("editflow_is_experimental", False)),
     }
     (out_dir / "sampling_metadata.json").write_text(json.dumps(sample_meta, indent=2), encoding="utf-8")
