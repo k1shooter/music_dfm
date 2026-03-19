@@ -7,7 +7,9 @@ from music_graph_dfm.diffusion.edit_flow import (
     apply_edit_move,
     derive_oracle_edit_move,
     editflow_rate_loss,
-    perturb_state_for_editflow,
+    random_edit_augmentation_step,
+    sample_forward_edit_ctmc_source,
+    sample_forward_edit_ctmc_step_from_prior,
     sample_edit_ctmc_step,
 )
 from music_graph_dfm.diffusion.losses import auxiliary_denoising_loss, rate_matching_loss
@@ -35,8 +37,10 @@ __all__ = [
     "ctmc_sample",
     "derive_oracle_edit_move",
     "editflow_rate_loss",
-    "perturb_state_for_editflow",
+    "random_edit_augmentation_step",
     "rate_matching_loss",
+    "sample_forward_edit_ctmc_source",
+    "sample_forward_edit_ctmc_step_from_prior",
     "sample_edit_ctmc_step",
     "sample_forward_path",
     "sample_prior",

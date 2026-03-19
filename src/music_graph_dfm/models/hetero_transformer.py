@@ -190,6 +190,9 @@ if nn is not None:
             self.edit_span_dst = nn.Linear(cfg.hidden_dim, 1)
             self.edit_insert_host = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["note.host"])))
             self.edit_insert_template = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["note.template"])))
+            self.edit_insert_pitch = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["note.pitch_token"])))
+            self.edit_insert_velocity = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["note.velocity"])))
+            self.edit_insert_role = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["note.role"])))
             self.edit_span_rel = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["e_ss.relation"])))
 
             spec = template_spec or {}
@@ -400,11 +403,31 @@ if nn is not None:
                 "span_dst_logits": self.edit_span_dst(span_h).squeeze(-1),
                 "insert_host_logits": self.edit_insert_host(g),
                 "insert_template_logits": self.edit_insert_template(g),
+                "insert_pitch_logits": self.edit_insert_pitch(g),
+                "insert_velocity_logits": self.edit_insert_velocity(g),
+                "insert_role_logits": self.edit_insert_role(g),
                 "span_rel_logits": self.edit_span_rel(pair_ss),
             }
 
 
 else:
+
+    class TimeEmbedding:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("TimeEmbedding requires torch")
+
+
+    class NodeHead:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("NodeHead requires torch")
+
+
+    class PairHead:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("PairHead requires torch")
 
     class FSNTGV2HeteroTransformer:  # type: ignore
         def __init__(self, *args, **kwargs):

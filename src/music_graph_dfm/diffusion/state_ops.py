@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Dict
 
-from music_graph_dfm.constants import COORD_ORDER, NOTE_CHANNELS, SPAN_CHANNELS
+from music_graph_dfm.constants import COORD_ORDER, GRAPH_KERNEL_APPROX_COORDS, NOTE_CHANNELS, SPAN_CHANNELS
 from music_graph_dfm.diffusion.masking import enforce_state_constraints
 from music_graph_dfm.diffusion.paths import graph_kernel_sample_tensor, mixture_sample_tensor
+
+LOGGER = logging.getLogger(__name__)
+_GRAPH_KERNEL_WARNING_EMITTED = False
 
 
 @dataclass
@@ -113,9 +117,11 @@ def sample_forward_path(
     path_type: str = "mixture",
     graph_kernels: Dict[str, "torch.Tensor"] | None = None,
 ):
+    global _GRAPH_KERNEL_WARNING_EMITTED
     xt: Dict[str, "torch.Tensor"] = {}
     xt_is_x0: Dict[str, "torch.Tensor"] = {}
     eta: Dict[str, float] = {}
+    used_kernel_coords: list[str] = []
 
     for coord in COORD_ORDER:
         kappa = schedule.kappa(coord, t)
@@ -123,17 +129,34 @@ def sample_forward_path(
             path_type == "graph_kernel"
             and graph_kernels is not None
             and coord in graph_kernels
-            and coord in {"span.harm", "note.pitch_token"}
+            and coord in set(GRAPH_KERNEL_APPROX_COORDS)
         )
         if use_graph_kernel:
             xt[coord], xt_is_x0[coord] = graph_kernel_sample_tensor(x0[coord], x1[coord], kappa, graph_kernels[coord])
+            used_kernel_coords.append(coord)
         else:
             xt[coord], xt_is_x0[coord] = mixture_sample_tensor(x0[coord], x1[coord], kappa)
         eta[coord] = schedule.eta(coord, t)
 
+    is_approx = len(used_kernel_coords) > 0
+    if is_approx and not _GRAPH_KERNEL_WARNING_EMITTED:
+        LOGGER.warning(
+            "Using approximate graph-kernel path for %s. "
+            "Target distribution uses K[x1,:] mixture and target rates use off-diagonal Poisson approximation.",
+            ",".join(used_kernel_coords),
+        )
+        _GRAPH_KERNEL_WARNING_EMITTED = True
+
     meta = {
         "path_type": path_type,
         "graph_kernels": graph_kernels or {},
-        "graph_kernel_is_approximate": path_type == "graph_kernel",
+        "graph_kernel_used_coords": used_kernel_coords,
+        "graph_kernel_is_approximate": is_approx,
+        "graph_kernel_target_distribution": (
+            "q_t(x^c)=(1-kappa)delta_{x0^c}+kappa*K[x1^c,:]" if is_approx else ""
+        ),
+        "graph_kernel_target_rate_approximation": (
+            "eta_c * K[x1^c,v] for off-diagonal v!=x_t^c" if is_approx else ""
+        ),
     }
     return xt, xt_is_x0, eta, meta

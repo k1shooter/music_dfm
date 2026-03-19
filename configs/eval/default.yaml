@@ -5,3 +5,5 @@ num_steps: 96
 device: cpu
 sample_out_dir: artifacts/eval_samples
 report_out: artifacts/eval_report.json
+whole_song_mode: null
+whole_song_segments: 4

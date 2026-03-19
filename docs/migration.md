@@ -1,86 +1,96 @@
-# Migration Note (FSNTG-v1 Dense E_NS -> FSNTG-v2 Host/Template)
+# Migration Note: Second-Pass Corrections
 
-## Audit: Doc/Code Mismatch Treated As Bug
+This note records the targeted correction pass from partially aligned FSNTG-v2 code to the current implementation.
 
-Before the refactor, the repository had inconsistent definitions across docs and code.
-Those mismatches were treated as implementation bugs, not documentation style issues.
+## Old Mismatch -> New Fix
 
-| Area | Before | After |
+| Area | Old mismatch | New fix |
 |---|---|---|
-| README representation | `X=(S,N,E_NS,E_SS)` | `X=(S,N,H,Q,E_SS)` |
-| Design note representation | `X=(S,N,H,Q,E_SS)` | kept, aligned to implemented code |
-| Primary model/data state | Dense `E_NS` note-span matrix | factorized `host` + `template` coordinates |
-| Model aux note graph | template-id arithmetic proxies | deterministic from decoded onset/duration |
-| CTMC jump semantics | jump could sample current category | strict off-diagonal jump destinations |
-| "editflow" mode | random augmentation behavior | edit-CTMC with edit-rate heads and edit objective |
+| Docs vs code status | README/design note could overstate exactness | Method status now separates trusted vs approximate parts |
+| Pitch token semantics | API and usage were mixed between component-level and context-level semantics | Primary API is now host-context encode/decode (`abs_pitch <-> token`) with compatibility/projection helpers |
+| CTMC sampler | Degenerate off-diagonal mass could still trigger non-faithful behavior | Degenerate case now forces stay; masked/padded coordinates always stay |
+| Editflow training source process | Random perturbation used as primary source generation | Forward edit-CTMC prior noising is primary; augmentation renamed and optional |
+| Graph-kernel path | Approximation not fully explicit in metadata/reporting | Approximation formula and coordinates are stored in checkpoint/eval metadata; warnings are logged |
+| Developer UX | uv-first workflow in docs/examples | Script-first `python scripts/*.py` workflow with venv+pip primary |
 
-## Representation Migration
+## File-by-File Change Summary
 
-Old primary diffusion coordinates included a dense note-span tensor.
-That representation made multi-host inconsistencies possible in-state.
+- `README.md`
+  - switched to script-first workflow
+  - added explicit method-status and approximation notes
+  - documented whole-song evaluation separation
+- `docs/design_note.md`
+  - added **Method Status** section
+  - clarified graph-kernel target distribution/rate approximation
+  - clarified editflow source process and augmentation separation
+- `docs/setup.md` (new)
+  - venv + pip setup and script-first commands
+  - uv moved to optional section
+- `docs/migration.md` (this file)
+  - recorded mismatch->fix mapping and limitations
+- `requirements.txt`, `requirements-dev.txt` (new)
+  - pip-installable dependency entrypoints
+- `scripts/*.py` (new)
+  - direct developer entrypoints:
+    - `download_pop909.py`
+    - `preprocess.py`
+    - `train.py`
+    - `train_editflow.py`
+    - `sample.py`
+    - `eval.py`
+    - `visualize.py`
+- `src/music_graph_dfm/representation/pitch_codec.py`
+  - context-aware primary API:
+    - `encode_pitch_token(abs_pitch, host_span_state)`
+    - `decode_pitch_token(token, host_span_state)`
+    - `compatibility_table(host_span_state, token)`
+    - `nearest_token_projection(...)`
+  - decode uses both harmonic root and role semantics
+- `src/music_graph_dfm/preprocessing/pop909.py`
+  - preprocessing now stores pitch tokens via host-context encode path
+- `src/music_graph_dfm/diffusion/ctmc.py`
+  - strict off-diagonal normalization with explicit degenerate stay behavior
+- `src/music_graph_dfm/diffusion/edit_flow.py`
+  - added forward edit-CTMC source sampling utilities
+  - renamed augmentation utility (`random_edit_augmentation_step`)
+  - strengthened edit sampler validity and off-diagonal substitutions
+  - fixed edit loss argument handling for span relation and insert content heads
+- `src/music_graph_dfm/models/hetero_transformer.py`
+  - added insert-content heads (`insert_pitch/velocity/role`)
+- `src/music_graph_dfm/models/simple_baseline.py`
+  - added insert-content heads to keep editflow API consistent
+- `src/music_graph_dfm/diffusion/state_ops.py`
+  - graph-kernel usage metadata and warning emission
+- `src/music_graph_dfm/diffusion/paths.py`
+  - normalized graph-kernel targets and explicit target-rate approximation helper
+- `src/music_graph_dfm/diffusion/losses.py`
+  - graph-kernel target rate approximation wired explicitly for supported coords
+- `src/music_graph_dfm/training/runner.py`
+  - editflow source generation switched to forward edit-CTMC prior by default
+  - optional augmentation path preserved under explicit flag
+  - graph-kernel approximation metadata added to checkpoints
+- `src/music_graph_dfm/evaluation/pipeline.py`
+  - checkpoint eval now stores checkpoint metadata in report
+  - optional MIDI export in checkpoint eval mode
+  - whole-song mode propagated through checkpoint evaluation
+- Compatibility wrappers added for expected paths:
+  - `src/music_graph_dfm/train_runner.py`
+  - `src/music_graph_dfm/data/pitch_codec.py`
+  - `src/music_graph_dfm/models/hetero_fsntg_transformer.py`
+  - `src/music_graph_dfm/samplers/ctmc_sampler.py`
+  - `src/music_graph_dfm/samplers/edit_sampler.py`
+- Tests added/updated:
+  - `tests/test_pitch_codec.py`
+  - `tests/test_state_roundtrip.py`
+  - `tests/test_ctmc_sampler.py`
+  - `tests/test_editflow.py`
+  - `tests/test_graph_kernel_sanity.py`
+  - `tests/test_scripts_smoke.py`
+  - updated `tests/test_checkpoint_metadata.py`
 
-New FSNTG-v2 coordinates are:
+## Remaining Approximations / Limitations
 
-- `span.*` channels
-- `note.*` channels
-- `note.host`
-- `note.template`
-- `e_ss.relation`
-
-Dense note-span adjacency is now a derived view only:
-
-- `materialize_dense_note_span_view(state)`
-
-## Sampler Migration
-
-Old CTMC behavior allowed re-sampling current category after jump decision.
-
-New CTMC behavior:
-
-1. `lam = softplus(...)`
-2. `pi = softmax(logits)`
-3. remove current category probability
-4. renormalize off-diagonal support
-5. `p_jump = 1 - exp(-h * lam)`
-6. jump samples only from off-diagonal support
-
-## EditFlow Migration
-
-Old "editflow" mode perturbed targets and reused non-edit training behavior.
-
-New edit mode uses explicit edit coordinates and rate heads:
-
-- insert note
-- delete note
-- substitute content
-- substitute host
-- substitute template
-- substitute span relation
-
-Training/sampling use edit-CTMC transitions and edit losses.
-
-## Training API Migration
-
-Previous training entrypoint mixed DFM and editflow logic in one loop.
-
-New explicit entrypoints:
-
-- `run_training_dfm(cfg)`
-- `run_training_editflow(cfg)`
-- `run_training(cfg)` dispatcher
-
-Checkpoints now save model/data/config metadata for reproducible sampling/eval.
-
-## Package and CLI Migration
-
-Old workflow relied on root-package imports and editable install assumptions.
-
-New workflow uses `src/` layout and package entrypoint:
-
-- `uv sync --extra dev`
-- `uv run music-graph-dfm download-pop909 ...`
-- `uv run music-graph-dfm preprocess ...`
-- `uv run music-graph-dfm train ...`
-- `uv run music-graph-dfm sample ...`
-- `uv run music-graph-dfm eval ...`
-- `uv run music-graph-dfm visualize ...` (or `viz`)
+- Graph-kernel path remains approximate by design in this codebase.
+- Editflow source noising is CTMC-prior driven; it is not yet an exact bridge construction with closed-form forward/posterior transitions.
+- Harmony compatibility scoring is lightweight rule-based (not a learned music-theory model).
+- Section/repetition heuristics remain deterministic and rule-based.

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Dict
 
-from music_graph_dfm.constants import COORD_ORDER
+from music_graph_dfm.constants import COORD_ORDER, GRAPH_KERNEL_APPROX_COORDS
 from music_graph_dfm.data.tensor_codec import coords_to_states
 from music_graph_dfm.diffusion.masking import enforce_state_constraints
-from music_graph_dfm.diffusion.paths import graph_kernel_target_distribution
+from music_graph_dfm.diffusion.paths import graph_kernel_target_distribution, graph_kernel_target_rate_approximation
 from music_graph_dfm.representation.state import reconstruct_aux_graph
 
 
@@ -30,7 +30,7 @@ def _target_distribution(coord: str, x1, path_meta: dict, vocab_size: int):
 
     path_type = path_meta.get("path_type", "mixture")
     kernels = path_meta.get("graph_kernels", {})
-    if path_type == "graph_kernel" and coord in kernels and coord in {"span.harm", "note.pitch_token"}:
+    if path_type == "graph_kernel" and coord in kernels and coord in set(GRAPH_KERNEL_APPROX_COORDS):
         return graph_kernel_target_distribution(x1, kernels[coord])
     x1 = x1.clamp(min=0, max=vocab_size - 1)
     return torch.nn.functional.one_hot(x1, num_classes=vocab_size).to(torch.float32)
@@ -68,8 +68,16 @@ def rate_matching_loss(
         current = torch.nn.functional.one_hot(xt.clamp(min=0, max=vocab - 1), num_classes=vocab).to(torch.float32)
         pred_offdiag = lam.unsqueeze(-1) * pi * (1.0 - current)
 
-        target_dist = _target_distribution(coord, x1, path_meta, vocab)
-        target_rates = indicator.unsqueeze(-1) * float(eta[coord]) * target_dist * (1.0 - current)
+        if (
+            path_meta.get("path_type", "mixture") == "graph_kernel"
+            and coord in path_meta.get("graph_kernels", {})
+            and coord in set(GRAPH_KERNEL_APPROX_COORDS)
+        ):
+            approx = graph_kernel_target_rate_approximation(xt, x1, eta=float(eta[coord]), kernel=path_meta["graph_kernels"][coord])
+            target_rates = indicator.unsqueeze(-1) * approx
+        else:
+            target_dist = _target_distribution(coord, x1, path_meta, vocab)
+            target_rates = indicator.unsqueeze(-1) * float(eta[coord]) * target_dist * (1.0 - current)
 
         m = mask.unsqueeze(-1)
         nll = pred_offdiag - target_rates * torch.log(pred_offdiag + eps)

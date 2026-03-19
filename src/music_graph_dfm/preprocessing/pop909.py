@@ -191,11 +191,13 @@ def _build_state(
 
         meter_class = beats_per_bar * 16 + beat_unit
         template_id = rhythm_vocab.encode(meter_class, onset_bin, dur_class, tie, extension)
-        token = pitch_codec.encode_from_absolute_pitch(
-            pitch=event.pitch,
-            harmonic_root=harm[span_idx],
-            key=key[span_idx],
-            reg_center=reg_center[span_idx],
+        token = pitch_codec.encode_pitch_token(
+            abs_pitch=event.pitch,
+            host_span_state={
+                "key": key[span_idx],
+                "harm": harm[span_idx],
+                "reg_center": reg_center[span_idx],
+            },
         )
 
         active.append(1)

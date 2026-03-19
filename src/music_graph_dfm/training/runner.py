@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from pathlib import Path
 from typing import Dict, List
 
+from music_graph_dfm.constants import GRAPH_KERNEL_APPROX_COORDS
 from music_graph_dfm.data import FSNTGV2JSONDataset, collate_states, infer_vocab_sizes
 from music_graph_dfm.diffusion.ctmc import ctmc_sample
 from music_graph_dfm.diffusion.edit_flow import (
     derive_oracle_edit_move,
     editflow_rate_loss,
-    perturb_state_for_editflow,
+    random_edit_augmentation_step,
+    sample_forward_edit_ctmc_source,
     sample_edit_ctmc_step,
 )
 from music_graph_dfm.diffusion.losses import auxiliary_denoising_loss, music_structure_loss, rate_matching_loss
@@ -30,6 +33,8 @@ from music_graph_dfm.representation.pitch_codec import PitchTokenCodec
 from music_graph_dfm.representation.rhythm_templates import RhythmTemplateVocab
 from music_graph_dfm.representation.state import FSNTGV2State
 from music_graph_dfm.whole_song.generation import build_long_context_template, generate_whole_song
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _load_codecs(data_root: Path) -> tuple[RhythmTemplateVocab, PitchTokenCodec]:
@@ -223,6 +228,16 @@ def _checkpoint_extra(
     data_root: Path,
     graph_kernel_enabled: bool,
 ) -> dict:
+    path_type = str(cfg.get("diffusion", {}).get("path_type", "mixture"))
+    kernel_coords = list(GRAPH_KERNEL_APPROX_COORDS) if graph_kernel_enabled else []
+    graph_kernel_meta = {
+        "enabled": bool(graph_kernel_enabled),
+        "path_type": path_type,
+        "coordinates": kernel_coords,
+        "approximate": bool(path_type == "graph_kernel" and graph_kernel_enabled),
+        "target_distribution": "q_t(x^c)=(1-kappa)delta_{x0^c}+kappa*K[x1^c,:] for graph-kernel coords",
+        "target_rate_approximation": "off-diagonal Poisson matching with eta_c*K[x1^c,v] for v!=x_t^c",
+    }
     return {
         "cfg": cfg,
         "mode": mode,
@@ -237,7 +252,8 @@ def _checkpoint_extra(
             "rhythm_template_vocab": _load_optional_json(data_root / "rhythm_templates.json"),
             "pitch_codec": _load_optional_json(data_root / "pitch_codec.json"),
         },
-        "graph_kernel_is_approximate": bool(graph_kernel_enabled),
+        "graph_kernel_is_approximate": bool(graph_kernel_meta["approximate"]),
+        "graph_kernel": graph_kernel_meta,
     }
 
 
@@ -271,6 +287,16 @@ def _init_training_context(cfg: dict):
     prior_cfg = PriorConfig(**cfg["diffusion"].get("prior", {}))
     path_type = str(cfg["diffusion"].get("path_type", "mixture"))
     graph_kernel_enabled = bool(cfg["diffusion"].get("graph_kernel", {}).get("enabled", False))
+    if path_type == "graph_kernel" and graph_kernel_enabled:
+        LOGGER.warning(
+            "Graph-kernel path enabled for span.harm/note.pitch_token. "
+            "Target rates use an approximate off-diagonal matching surrogate."
+        )
+    if path_type == "graph_kernel" and not graph_kernel_enabled:
+        LOGGER.warning(
+            "path_type=graph_kernel but diffusion.graph_kernel.enabled=false; falling back to mixture kernels map."
+        )
+        path_type = "mixture"
 
     kernels = _graph_kernels(vocab_sizes, enabled=graph_kernel_enabled)
     kernels = {k: v.to(device) for k, v in kernels.items()}
@@ -465,6 +491,8 @@ def run_training_editflow(cfg: dict) -> dict:
     device = ctx["device"]
     epochs = int(ctx["epochs"])
     history = []
+    source_steps = int(cfg.get("train", {}).get("editflow_source_steps", 1))
+    use_random_aug = bool(cfg.get("train", {}).get("editflow_random_augmentation", False))
 
     for epoch in range(epochs):
         model.train()
@@ -474,7 +502,21 @@ def run_training_editflow(cfg: dict) -> dict:
         for states in train_loader:
             optimizer.zero_grad(set_to_none=True)
             target_states = states
-            source_states = [perturb_state_for_editflow(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
+            if use_random_aug:
+                source_states = [
+                    random_edit_augmentation_step(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states
+                ]
+            else:
+                source_states = [
+                    sample_forward_edit_ctmc_source(
+                        target_state=st,
+                        vocab_sizes=vocab_sizes,
+                        rng=rng,
+                        num_steps=source_steps,
+                        h=1.0 / max(1, source_steps),
+                    )
+                    for st in target_states
+                ]
             oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
 
             batch = _move_to_device(collate_states(source_states), device)
@@ -496,7 +538,21 @@ def run_training_editflow(cfg: dict) -> dict:
         with torch.no_grad():
             for states in valid_loader:
                 target_states = states
-                source_states = [perturb_state_for_editflow(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
+                if use_random_aug:
+                    source_states = [
+                        random_edit_augmentation_step(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states
+                    ]
+                else:
+                    source_states = [
+                        sample_forward_edit_ctmc_source(
+                            target_state=st,
+                            vocab_sizes=vocab_sizes,
+                            rng=rng,
+                            num_steps=source_steps,
+                            h=1.0 / max(1, source_steps),
+                        )
+                        for st in target_states
+                    ]
                 oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
                 batch = _move_to_device(collate_states(source_states), device)
                 edit_outputs = model.forward_edit(batch, torch.tensor(0.5, device=device))
@@ -505,7 +561,13 @@ def run_training_editflow(cfg: dict) -> dict:
                 vb += 1
         valid_loss /= max(1, vb)
 
-        summary = {"epoch": epoch + 1, "train_loss": train_loss, "valid_loss": valid_loss, "mode": "editflow"}
+        summary = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "valid_loss": valid_loss,
+            "mode": "editflow",
+            "source_process": "random_augmentation" if use_random_aug else "forward_edit_ctmc",
+        }
         history.append(summary)
         print(summary)
 

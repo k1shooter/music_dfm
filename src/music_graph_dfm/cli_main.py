@@ -113,6 +113,9 @@ def cmd_eval(args: argparse.Namespace) -> None:
             num_steps=args.num_steps,
             device=args.device,
             sampler_mode=args.sampler_mode,
+            whole_song_mode=args.whole_song_mode,
+            whole_song_segments=args.whole_song_segments,
+            export_midi=args.export_midi,
             out_dir=Path(args.sample_out_dir).expanduser().resolve(),
             out_path=out_path,
         )
@@ -213,6 +216,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--num-steps", type=int, default=96)
     p_eval.add_argument("--device", type=str, default="cpu")
     p_eval.add_argument("--sampler-mode", type=str, default="dfm", choices=["dfm", "editflow"])
+    p_eval.add_argument(
+        "--whole-song-mode",
+        type=str,
+        default=None,
+        choices=["long_context", "stitching_baseline"],
+    )
+    p_eval.add_argument("--whole-song-segments", type=int, default=4)
+    p_eval.add_argument("--export-midi", action="store_true")
     p_eval.add_argument("--out", type=str, default="artifacts/eval_report.json")
     p_eval.set_defaults(func=cmd_eval)
 

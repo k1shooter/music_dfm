@@ -1,157 +1,152 @@
 # music_graph_dfm
 
-FSNTG-v2 (Factorized Span-Note Template Graph v2) discrete flow matching and edit-flow for symbolic music generation.
+FSNTG-v2 (Factorized Span-Note Template Graph v2) for discrete flow matching and graph edit-flow in symbolic music generation.
 
-## What Changed
+## Method Status
 
-This refactor enforces the factorized state:
+Trusted:
+- FSNTG-v2 primary state: `X = (S, N, H, Q, E_SS)` with diffusion over
+  - span channels (`key,harm,meter,section,reg_center`)
+  - note channels (`active,pitch_token,velocity,role`)
+  - `note.host`, `note.template`
+  - `e_ss.relation`
+- deterministic note-note auxiliary graph from decoded timing only (`same_onset`, `overlap`, `sequential_same_role`)
+- CTMC reverse sampler with strict off-diagonal jumps
+- script-first preprocessing/training/sampling/evaluation pipeline
 
-- `X = (S, N, H, Q, E_SS)`
-- span channels: `key, harm, meter, section, reg_center`
-- note channels: `active, pitch_token, velocity, role`
-- note placement channels: `host` and `template`
-- span relations: `none,next,repeat,variation,contrast,modulation`
+Approximate / experimental:
+- graph-kernel path for `span.harm` and `note.pitch_token` uses an explicit approximation
+  - target distribution: `q_t=(1-kappa)delta_x0 + kappa*K[x1,:]`
+  - target rate approximation: off-diagonal Poisson matching with `eta*K[x1,v]`
+  - this mode logs warnings and is saved in checkpoint/eval metadata
+- editflow source-state construction is CTMC-prior-driven by default; random edit augmentation remains optional and separately named (`editflow_random_augmentation`)
 
-Dense note-span adjacency is no longer the diffusion state. It is a deterministic derived view from `(host, template)`.
+## Repository Layout
 
-## Repository Structure
-
-```
+```text
 repo/
-  pyproject.toml
-  uv.lock
   README.md
-  src/music_graph_dfm/
-    __init__.py
-    cli/
-    config/
-    data/
-    preprocessing/
-    representation/
-    models/
-    diffusion/
-    samplers/
-    guidance/
-    evaluation/
-    visualization/
-    utils/
+  pyproject.toml
+  requirements.txt
+  requirements-dev.txt
   configs/
   docs/
+    design_note.md
+    migration.md
+    setup.md
+  scripts/
+    download_pop909.py
+    preprocess.py
+    train.py
+    train_editflow.py
+    sample.py
+    eval.py
+    visualize.py
+  src/music_graph_dfm/
   tests/
   examples/
 ```
 
-## Install
+## Setup (Primary)
 
 ```bash
-uv sync --extra dev
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements-dev.txt
 ```
 
-No editable install is required.
+Detailed setup: [docs/setup.md](docs/setup.md)
 
-## CLI
-
-All commands are available via the console script:
-
-```bash
-uv run music-graph-dfm --help
-```
+## Script-First Workflow
 
 ### 1) Download POP909
 
 ```bash
-uv run music-graph-dfm download-pop909 \
-  --target-dir data/raw/POP909-Dataset
+python scripts/download_pop909.py --target-dir data/raw/POP909-Dataset
 ```
 
-### 2) Preprocess (beat-level default)
+### 2) Preprocess
 
 ```bash
-uv run music-graph-dfm preprocess \
+python scripts/preprocess.py \
   --raw-root data/raw/POP909-Dataset/POP909 \
   --output-root data/cache/pop909_fsntg_v2 \
   --span-resolution beat
 ```
 
-Artifacts:
-
-- `train.jsonl`, `valid.jsonl`, `test.jsonl`
-- `rhythm_templates.json`
-- `pitch_codec.json`
-- `stats.json`
-- `preprocessing_config.json`
-
-### 3) Train (DFM)
+### 3) Train DFM
 
 ```bash
-uv run music-graph-dfm train --config configs/train/default.yaml
+python scripts/train.py --config configs/train/default.yaml
 ```
 
-### 4) Train (EditFlow)
+### 4) Train EditFlow
 
 ```bash
-uv run music-graph-dfm train --config configs/train/editflow.yaml
+python scripts/train_editflow.py \
+  --config configs/train/editflow.yaml \
+  --editflow-source-steps 1
 ```
 
-Posterior/progress-like baselines:
+Optional augmentation-only mode (not true editflow source process):
 
 ```bash
-uv run music-graph-dfm train --config configs/train/posterior.yaml
-uv run music-graph-dfm train --config configs/train/progress_like.yaml
+python scripts/train_editflow.py \
+  --config configs/train/editflow.yaml \
+  --editflow-random-augmentation
 ```
 
 ### 5) Sample
 
 ```bash
-uv run music-graph-dfm sample \
+python scripts/sample.py \
   --checkpoint artifacts/checkpoints/epoch_20.pt \
   --data-root data/cache/pop909_fsntg_v2 \
   --num-samples 16 \
   --export-midi
 ```
 
-EditFlow sampler:
+Whole-song long-context mode:
 
 ```bash
-uv run music-graph-dfm sample \
-  --checkpoint artifacts/checkpoints_editflow/epoch_20.pt \
-  --sampler-mode editflow
-```
-
-Whole-song modes are explicit:
-
-- true long-context (single pass):
-
-```bash
-uv run music-graph-dfm sample \
+python scripts/sample.py \
   --checkpoint artifacts/checkpoints/epoch_20.pt \
   --whole-song-mode long_context
 ```
 
-- stitching baseline:
+Whole-song stitching baseline:
 
 ```bash
-uv run music-graph-dfm sample \
+python scripts/sample.py \
   --checkpoint artifacts/checkpoints/epoch_20.pt \
   --whole-song-mode stitching_baseline
 ```
 
-### 6) Evaluate generated samples
+### 6) Evaluate
 
-From checkpoint (generation included):
+Checkpoint mode (`checkpoint -> generate -> decode -> score`):
 
 ```bash
-uv run music-graph-dfm eval \
+python scripts/eval.py \
   --eval-mode checkpoint \
   --checkpoint artifacts/checkpoints/epoch_20.pt \
-  --sampler-mode dfm \
   --data-root data/cache/pop909_fsntg_v2
 ```
 
-From pre-generated sample directory:
+Whole-song comparison report (long-context vs stitching baseline):
 
 ```bash
-uv run music-graph-dfm eval \
+python scripts/eval.py \
+  --eval-mode checkpoint \
+  --checkpoint artifacts/checkpoints/epoch_20.pt \
+  --whole-song-compare
+```
+
+Sample-directory mode:
+
+```bash
+python scripts/eval.py \
   --eval-mode sample-dir \
   --sample-dir artifacts/samples \
   --data-root data/cache/pop909_fsntg_v2
@@ -160,34 +155,55 @@ uv run music-graph-dfm eval \
 Reference-only sanity mode:
 
 ```bash
-uv run music-graph-dfm eval \
+python scripts/eval.py \
   --eval-mode reference \
   --data-root data/cache/pop909_fsntg_v2
 ```
 
-### 7) Visualize sample directory
+### 7) Visualize
 
 ```bash
-uv run music-graph-dfm visualize \
+python scripts/visualize.py \
   --sample-dir artifacts/samples \
   --out artifacts/visualization_summary.json
 ```
 
-Alias:
+## Metrics
+
+Evaluation includes:
+- OOK
+- chord accuracy / similarity (when reference is available)
+- groove similarity
+- note density
+- host validity (`host_validity`, `invalid_host_rate`)
+- duplicate note rate
+- invalid decode rate
+- voice-leading large-leap rate
+- span relation accuracy (when reference is available)
+- phrase repetition consistency
+
+## Optional CLI / uv
+
+Console script remains available:
 
 ```bash
-uv run music-graph-dfm viz \
-  --sample-dir artifacts/samples \
-  --out artifacts/visualization_summary.json
+music-graph-dfm --help
+```
+
+Optional uv usage:
+
+```bash
+uv sync --extra dev
+uv run python scripts/train.py --config configs/train/default.yaml
 ```
 
 ## Tests
 
 ```bash
-uv run pytest
+pytest
 ```
 
-## Design and Migration Notes
+## Notes
 
-- [Design note](docs/design_note.md)
-- [Migration note](docs/migration.md)
+- Design note: [docs/design_note.md](docs/design_note.md)
+- Migration note: [docs/migration.md](docs/migration.md)

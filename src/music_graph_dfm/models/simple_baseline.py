@@ -70,6 +70,9 @@ if nn is not None:
             self.span_dst = nn.Linear(d, 1)
             self.insert_host = nn.Linear(d * 2, max(2, int(vocab_sizes["note.host"])))
             self.insert_template = nn.Linear(d * 2, max(2, int(vocab_sizes["note.template"])))
+            self.insert_pitch = nn.Linear(d * 2, max(2, int(vocab_sizes["note.pitch_token"])))
+            self.insert_velocity = nn.Linear(d * 2, max(2, int(vocab_sizes["note.velocity"])))
+            self.insert_role = nn.Linear(d * 2, max(2, int(vocab_sizes["note.role"])))
             self.span_rel = nn.Linear(d, max(2, int(vocab_sizes["e_ss.relation"])))
 
         def _encode(self, batch: dict, t):
@@ -134,6 +137,9 @@ if nn is not None:
                 "span_dst_logits": self.span_dst(span_h).squeeze(-1),
                 "insert_host_logits": self.insert_host(g),
                 "insert_template_logits": self.insert_template(g),
+                "insert_pitch_logits": self.insert_pitch(g),
+                "insert_velocity_logits": self.insert_velocity(g),
+                "insert_role_logits": self.insert_role(g),
                 "span_rel_logits": self.span_rel(pair),
             }
 

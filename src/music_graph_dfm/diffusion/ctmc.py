@@ -20,14 +20,9 @@ def _normalize_offdiag(pi, current):
     offdiag = pi * (1.0 - current_oh)
     denom = offdiag.sum(dim=-1, keepdim=True)
 
-    fallback = (1.0 - current_oh)
-    fallback_den = fallback.sum(dim=-1, keepdim=True)
-    fallback = torch.where(
-        fallback_den > 0,
-        fallback / fallback_den.clamp(min=1e-8),
-        torch.zeros_like(fallback),
-    )
-    return torch.where(denom > 1e-12, offdiag / denom.clamp(min=1e-12), fallback)
+    probs = torch.where(denom > 1e-12, offdiag / denom.clamp(min=1e-12), torch.zeros_like(offdiag))
+    has_offdiag_mass = denom.squeeze(-1) > 1e-12
+    return probs, has_offdiag_mass
 
 
 def ctmc_jump_step(
@@ -51,18 +46,26 @@ def ctmc_jump_step(
         out = outputs[coord]
         lam = torch.nn.functional.softplus(out["lambda"]).squeeze(-1)
         pi = torch.softmax(out["logits"], dim=-1)
-        pi_off = _normalize_offdiag(pi, xt)
+        pi_off, has_mass = _normalize_offdiag(pi, xt)
 
         if guidance_fn is not None:
             lam, pi_off = guidance_fn(coord, x_t, lam, pi_off)
+            pi_guided = torch.clamp(pi_off, min=0.0)
+            pi_off, guided_has_mass = _normalize_offdiag(pi_guided, xt)
+            has_mass = has_mass & guided_has_mass
 
         if pi_off.shape[-1] <= 1:
             x_next[coord] = xt
             continue
 
         p_jump = 1.0 - torch.exp(-float(h) * lam)
-        jump = torch.bernoulli(p_jump).to(torch.bool)
-        sample = torch.distributions.Categorical(probs=pi_off).sample()
+        p_jump = torch.clamp(p_jump, min=0.0, max=1.0)
+        jump = torch.bernoulli(p_jump).to(torch.bool) & has_mass
+
+        vocab = pi_off.shape[-1]
+        current_oh = torch.nn.functional.one_hot(xt.clamp(min=0, max=vocab - 1), num_classes=vocab).to(torch.float32)
+        safe_probs = torch.where(has_mass.unsqueeze(-1), pi_off, current_oh)
+        sample = torch.distributions.Categorical(probs=safe_probs).sample()
         updated = torch.where(jump, sample, xt)
 
         mask = masks[coord]

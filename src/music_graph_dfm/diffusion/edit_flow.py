@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from enum import IntEnum
@@ -138,51 +139,219 @@ def derive_oracle_edit_move(source: FSNTGV2State, target: FSNTGV2State) -> EditM
     return None
 
 
-def perturb_state_for_editflow(state: FSNTGV2State, vocab_sizes: Dict[str, int], rng: random.Random) -> FSNTGV2State:
-    """Samples a neighboring edit state as EditFlow source state."""
+def _sample_different_int(rng: random.Random, upper: int, current: int) -> int:
+    upper = max(1, int(upper))
+    current = int(current)
+    if upper <= 1:
+        return current
+    candidate = rng.randrange(upper)
+    if candidate == current:
+        candidate = (candidate + 1) % upper
+    return candidate
+
+
+def random_edit_augmentation_step(state: FSNTGV2State, vocab_sizes: Dict[str, int], rng: random.Random) -> FSNTGV2State:
+    """Optional augmentation utility (not the EditFlow forward process)."""
     out = state.copy()
     move_choices: List[EditMove] = []
 
     if out.num_notes > 0:
         i = rng.randrange(out.num_notes)
         move_choices.append(EditMove(move_type=EditMoveType.DELETE_NOTE, note_idx=i))
-        move_choices.append(EditMove(
-            move_type=EditMoveType.SUBSTITUTE_CONTENT,
-            note_idx=i,
+        move_choices.append(
+            EditMove(
+                move_type=EditMoveType.SUBSTITUTE_CONTENT,
+                note_idx=i,
+                pitch_token=rng.randrange(max(1, vocab_sizes["note.pitch_token"])),
+                velocity=rng.randrange(max(1, vocab_sizes["note.velocity"])),
+                role=rng.randrange(max(1, vocab_sizes["note.role"])),
+            )
+        )
+        move_choices.append(
+            EditMove(
+                move_type=EditMoveType.SUBSTITUTE_HOST,
+                note_idx=i,
+                host=rng.randrange(max(1, vocab_sizes["note.host"])),
+            )
+        )
+        move_choices.append(
+            EditMove(
+                move_type=EditMoveType.SUBSTITUTE_TEMPLATE,
+                note_idx=i,
+                template=rng.randrange(max(1, vocab_sizes["note.template"])),
+            )
+        )
+
+    move_choices.append(
+        EditMove(
+            move_type=EditMoveType.INSERT_NOTE,
+            host=rng.randrange(max(1, vocab_sizes["note.host"])),
+            template=rng.randrange(max(1, vocab_sizes["note.template"])),
             pitch_token=rng.randrange(max(1, vocab_sizes["note.pitch_token"])),
             velocity=rng.randrange(max(1, vocab_sizes["note.velocity"])),
             role=rng.randrange(max(1, vocab_sizes["note.role"])),
-        ))
-        move_choices.append(EditMove(
-            move_type=EditMoveType.SUBSTITUTE_HOST,
-            note_idx=i,
-            host=rng.randrange(max(1, vocab_sizes["note.host"])),
-        ))
-        move_choices.append(EditMove(
-            move_type=EditMoveType.SUBSTITUTE_TEMPLATE,
-            note_idx=i,
-            template=rng.randrange(max(1, vocab_sizes["note.template"])),
-        ))
-
-    move_choices.append(EditMove(
-        move_type=EditMoveType.INSERT_NOTE,
-        host=rng.randrange(max(1, vocab_sizes["note.host"])),
-        template=rng.randrange(max(1, vocab_sizes["note.template"])),
-        pitch_token=rng.randrange(max(1, vocab_sizes["note.pitch_token"])),
-        velocity=rng.randrange(max(1, vocab_sizes["note.velocity"])),
-        role=rng.randrange(max(1, vocab_sizes["note.role"])),
-    ))
+        )
+    )
 
     if out.num_spans > 0:
-        move_choices.append(EditMove(
-            move_type=EditMoveType.SUBSTITUTE_SPAN_RELATION,
-            span_src=rng.randrange(out.num_spans),
-            span_dst=rng.randrange(out.num_spans),
-            relation=rng.randrange(max(1, vocab_sizes["e_ss.relation"])),
-        ))
+        move_choices.append(
+            EditMove(
+                move_type=EditMoveType.SUBSTITUTE_SPAN_RELATION,
+                span_src=rng.randrange(out.num_spans),
+                span_dst=rng.randrange(out.num_spans),
+                relation=rng.randrange(max(1, vocab_sizes["e_ss.relation"])),
+            )
+        )
 
-    move = rng.choice(move_choices)
-    return apply_edit_move(out, move)
+    return apply_edit_move(out, rng.choice(move_choices))
+
+
+def sample_forward_edit_ctmc_step_from_prior(
+    state: FSNTGV2State,
+    vocab_sizes: Dict[str, int],
+    rng: random.Random,
+    h: float = 1.0,
+    type_rates: Dict[EditMoveType, float] | None = None,
+) -> tuple[FSNTGV2State, EditMove | None]:
+    """Sample one edit from a forward edit CTMC prior and apply it."""
+    rates = {
+        EditMoveType.INSERT_NOTE: 0.25,
+        EditMoveType.DELETE_NOTE: 0.2,
+        EditMoveType.SUBSTITUTE_CONTENT: 0.25,
+        EditMoveType.SUBSTITUTE_HOST: 0.1,
+        EditMoveType.SUBSTITUTE_TEMPLATE: 0.1,
+        EditMoveType.SUBSTITUTE_SPAN_RELATION: 0.1,
+    }
+    if type_rates is not None:
+        rates.update(type_rates)
+
+    valid: Dict[EditMoveType, float] = {}
+    if state.num_spans > 0:
+        valid[EditMoveType.INSERT_NOTE] = max(0.0, float(rates[EditMoveType.INSERT_NOTE]))
+        valid[EditMoveType.SUBSTITUTE_SPAN_RELATION] = max(0.0, float(rates[EditMoveType.SUBSTITUTE_SPAN_RELATION]))
+    if state.num_notes > 0:
+        valid[EditMoveType.DELETE_NOTE] = max(0.0, float(rates[EditMoveType.DELETE_NOTE]))
+        valid[EditMoveType.SUBSTITUTE_CONTENT] = max(0.0, float(rates[EditMoveType.SUBSTITUTE_CONTENT]))
+        valid[EditMoveType.SUBSTITUTE_HOST] = max(0.0, float(rates[EditMoveType.SUBSTITUTE_HOST]))
+        valid[EditMoveType.SUBSTITUTE_TEMPLATE] = max(0.0, float(rates[EditMoveType.SUBSTITUTE_TEMPLATE]))
+
+    total_hazard = sum(valid.values())
+    if total_hazard <= 0:
+        return state.copy(), None
+
+    p_jump = 1.0 - math.exp(-float(h) * total_hazard)
+    p_jump = max(0.0, min(1.0, p_jump))
+    if rng.random() >= p_jump:
+        return state.copy(), None
+
+    r = rng.random() * total_hazard
+    acc = 0.0
+    move_type = EditMoveType.INSERT_NOTE
+    for k, v in valid.items():
+        acc += v
+        if r <= acc:
+            move_type = k
+            break
+
+    if move_type == EditMoveType.INSERT_NOTE:
+        host = rng.randrange(1, max(2, state.num_spans + 1))
+        template = rng.randrange(1, max(2, vocab_sizes["note.template"]))
+        move = EditMove(
+            move_type=move_type,
+            host=host,
+            template=template,
+            pitch_token=rng.randrange(max(1, vocab_sizes["note.pitch_token"])),
+            velocity=rng.randrange(max(1, vocab_sizes["note.velocity"])),
+            role=rng.randrange(max(1, vocab_sizes["note.role"])),
+        )
+        return apply_edit_move(state, move), move
+
+    if move_type == EditMoveType.DELETE_NOTE:
+        idx = rng.randrange(state.num_notes)
+        move = EditMove(move_type=move_type, note_idx=idx)
+        return apply_edit_move(state, move), move
+
+    if move_type == EditMoveType.SUBSTITUTE_CONTENT:
+        idx = rng.randrange(state.num_notes)
+        move = EditMove(
+            move_type=move_type,
+            note_idx=idx,
+            pitch_token=_sample_different_int(
+                rng,
+                max(1, vocab_sizes["note.pitch_token"]),
+                int(state.note_attrs["pitch_token"][idx]),
+            ),
+            velocity=_sample_different_int(
+                rng,
+                max(1, vocab_sizes["note.velocity"]),
+                int(state.note_attrs["velocity"][idx]),
+            ),
+            role=_sample_different_int(
+                rng,
+                max(1, vocab_sizes["note.role"]),
+                int(state.note_attrs["role"][idx]),
+            ),
+        )
+        return apply_edit_move(state, move), move
+
+    if move_type == EditMoveType.SUBSTITUTE_HOST:
+        idx = rng.randrange(state.num_notes)
+        move = EditMove(
+            move_type=move_type,
+            note_idx=idx,
+            host=_sample_different_int(
+                rng,
+                max(1, min(max(1, vocab_sizes["note.host"]), state.num_spans + 1)),
+                int(state.host[idx]),
+            ),
+        )
+        return apply_edit_move(state, move), move
+
+    if move_type == EditMoveType.SUBSTITUTE_TEMPLATE:
+        idx = rng.randrange(state.num_notes)
+        move = EditMove(
+            move_type=move_type,
+            note_idx=idx,
+            template=_sample_different_int(
+                rng,
+                max(1, vocab_sizes["note.template"]),
+                int(state.template[idx]),
+            ),
+        )
+        return apply_edit_move(state, move), move
+
+    src = rng.randrange(state.num_spans)
+    dst = rng.randrange(state.num_spans)
+    current_rel = int(state.e_ss[src][dst])
+    move = EditMove(
+        move_type=EditMoveType.SUBSTITUTE_SPAN_RELATION,
+        span_src=src,
+        span_dst=dst,
+        relation=_sample_different_int(rng, max(1, vocab_sizes["e_ss.relation"]), current_rel),
+    )
+    return apply_edit_move(state, move), move
+
+
+def sample_forward_edit_ctmc_source(
+    target_state: FSNTGV2State,
+    vocab_sizes: Dict[str, int],
+    rng: random.Random,
+    num_steps: int = 1,
+    h: float = 1.0,
+    type_rates: Dict[EditMoveType, float] | None = None,
+) -> FSNTGV2State:
+    """Generate an EditFlow source state by running a forward edit CTMC from target."""
+    out = target_state.copy()
+    steps = max(1, int(num_steps))
+    for _ in range(steps):
+        out, _ = sample_forward_edit_ctmc_step_from_prior(
+            state=out,
+            vocab_sizes=vocab_sizes,
+            rng=rng,
+            h=h,
+            type_rates=type_rates,
+        )
+    return out
 
 
 def editflow_rate_loss(edit_outputs: Dict[str, "torch.Tensor"], oracle_moves: Iterable[EditMove], eps: float = 1e-8):
@@ -214,27 +383,78 @@ def editflow_rate_loss(edit_outputs: Dict[str, "torch.Tensor"], oracle_moves: It
             arg_losses.append(F.cross_entropy(edit_outputs["note_logits"][b : b + 1], torch.tensor([max(0, move.note_idx)], device=type_logits.device)))
 
         if move.move_type == EditMoveType.SUBSTITUTE_HOST:
-            arg_losses.append(F.cross_entropy(edit_outputs["host_logits"][b, max(0, move.note_idx)].unsqueeze(0), torch.tensor([move.host], device=type_logits.device)))
+            arg_losses.append(
+                F.cross_entropy(
+                    edit_outputs["host_logits"][b, max(0, move.note_idx)].unsqueeze(0),
+                    torch.tensor([move.host], device=type_logits.device),
+                )
+            )
 
         if move.move_type == EditMoveType.SUBSTITUTE_TEMPLATE:
-            arg_losses.append(F.cross_entropy(edit_outputs["template_logits"][b, max(0, move.note_idx)].unsqueeze(0), torch.tensor([move.template], device=type_logits.device)))
+            arg_losses.append(
+                F.cross_entropy(
+                    edit_outputs["template_logits"][b, max(0, move.note_idx)].unsqueeze(0),
+                    torch.tensor([move.template], device=type_logits.device),
+                )
+            )
 
-        if move.move_type in {EditMoveType.INSERT_NOTE, EditMoveType.SUBSTITUTE_CONTENT}:
-            arg_losses.append(F.cross_entropy(edit_outputs["pitch_logits"][b, max(0, move.note_idx)].unsqueeze(0), torch.tensor([move.pitch_token], device=type_logits.device)))
-            arg_losses.append(F.cross_entropy(edit_outputs["velocity_logits"][b, max(0, move.note_idx)].unsqueeze(0), torch.tensor([move.velocity], device=type_logits.device)))
-            arg_losses.append(F.cross_entropy(edit_outputs["role_logits"][b, max(0, move.note_idx)].unsqueeze(0), torch.tensor([move.role], device=type_logits.device)))
+        if move.move_type == EditMoveType.SUBSTITUTE_CONTENT:
+            arg_losses.append(
+                F.cross_entropy(
+                    edit_outputs["pitch_logits"][b, max(0, move.note_idx)].unsqueeze(0),
+                    torch.tensor([move.pitch_token], device=type_logits.device),
+                )
+            )
+            arg_losses.append(
+                F.cross_entropy(
+                    edit_outputs["velocity_logits"][b, max(0, move.note_idx)].unsqueeze(0),
+                    torch.tensor([move.velocity], device=type_logits.device),
+                )
+            )
+            arg_losses.append(
+                F.cross_entropy(
+                    edit_outputs["role_logits"][b, max(0, move.note_idx)].unsqueeze(0),
+                    torch.tensor([move.role], device=type_logits.device),
+                )
+            )
 
         if move.move_type == EditMoveType.SUBSTITUTE_SPAN_RELATION:
             arg_losses.append(F.cross_entropy(edit_outputs["span_src_logits"][b : b + 1], torch.tensor([move.span_src], device=type_logits.device)))
             arg_losses.append(F.cross_entropy(edit_outputs["span_dst_logits"][b : b + 1], torch.tensor([move.span_dst], device=type_logits.device)))
-            arg_losses.append(F.cross_entropy(edit_outputs["span_rel_logits"][b : b + 1], torch.tensor([move.relation], device=type_logits.device)))
+            arg_losses.append(
+                F.cross_entropy(
+                    edit_outputs["span_rel_logits"][b, move.span_src, move.span_dst].unsqueeze(0),
+                    torch.tensor([move.relation], device=type_logits.device),
+                )
+            )
 
         if move.move_type == EditMoveType.INSERT_NOTE:
             arg_losses.append(F.cross_entropy(edit_outputs["insert_host_logits"][b : b + 1], torch.tensor([move.host], device=type_logits.device)))
             arg_losses.append(F.cross_entropy(edit_outputs["insert_template_logits"][b : b + 1], torch.tensor([move.template], device=type_logits.device)))
+            arg_losses.append(F.cross_entropy(edit_outputs["insert_pitch_logits"][b : b + 1], torch.tensor([move.pitch_token], device=type_logits.device)))
+            arg_losses.append(F.cross_entropy(edit_outputs["insert_velocity_logits"][b : b + 1], torch.tensor([move.velocity], device=type_logits.device)))
+            arg_losses.append(F.cross_entropy(edit_outputs["insert_role_logits"][b : b + 1], torch.tensor([move.role], device=type_logits.device)))
 
     arg_loss = torch.stack(arg_losses).mean() if arg_losses else torch.tensor(0.0, device=type_logits.device)
     return poisson.mean() + type_ce + arg_loss
+
+
+def _sample_offdiag_from_logits(logits, current: int) -> int | None:
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("_sample_offdiag_from_logits requires torch") from exc
+
+    probs = torch.softmax(logits, dim=-1)
+    vocab = probs.shape[-1]
+    current = max(0, min(vocab - 1, int(current)))
+    probs = probs.clone()
+    probs[current] = 0.0
+    mass = probs.sum()
+    if float(mass.item()) <= 1e-12:
+        return None
+    probs = probs / mass
+    return int(torch.distributions.Categorical(probs=probs).sample().item())
 
 
 def sample_edit_ctmc_step(state: FSNTGV2State, edit_outputs_single: Dict[str, "torch.Tensor"], h: float) -> FSNTGV2State:
@@ -244,77 +464,112 @@ def sample_edit_ctmc_step(state: FSNTGV2State, edit_outputs_single: Dict[str, "t
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("sample_edit_ctmc_step requires torch") from exc
 
-    lam_type = torch.nn.functional.softplus(edit_outputs_single["lambda_type"][0])
+    lam_type = torch.nn.functional.softplus(edit_outputs_single["lambda_type"][0]).clone()
+    valid = torch.ones_like(lam_type, dtype=torch.bool)
+    if state.num_spans <= 0:
+        valid[int(EditMoveType.INSERT_NOTE)] = False
+        valid[int(EditMoveType.SUBSTITUTE_SPAN_RELATION)] = False
+    if state.num_notes <= 0:
+        valid[int(EditMoveType.DELETE_NOTE)] = False
+        valid[int(EditMoveType.SUBSTITUTE_CONTENT)] = False
+        valid[int(EditMoveType.SUBSTITUTE_HOST)] = False
+        valid[int(EditMoveType.SUBSTITUTE_TEMPLATE)] = False
+
+    lam_type = torch.where(valid, lam_type, torch.zeros_like(lam_type))
     total_hazard = lam_type.sum()
+    if float(total_hazard.item()) <= 1e-12:
+        return state
+
     p_jump = 1.0 - torch.exp(-float(h) * total_hazard)
+    p_jump = torch.clamp(p_jump, min=0.0, max=1.0)
     if float(torch.rand(1).item()) >= float(p_jump.item()):
         return state
 
-    probs = lam_type / lam_type.sum().clamp(min=1e-8)
+    probs = lam_type / total_hazard.clamp(min=1e-8)
     move_type = int(torch.distributions.Categorical(probs=probs).sample().item())
 
-    note_logits = edit_outputs_single["note_logits"][0]
-    note_idx = int(torch.distributions.Categorical(logits=note_logits).sample().item()) if state.num_notes > 0 else 0
+    if state.num_notes > 0:
+        note_logits = edit_outputs_single["note_logits"][0, : state.num_notes]
+        note_idx = int(torch.distributions.Categorical(logits=note_logits).sample().item())
+    else:
+        note_idx = 0
 
     if move_type == int(EditMoveType.INSERT_NOTE):
-        host = int(torch.distributions.Categorical(logits=edit_outputs_single["insert_host_logits"][0]).sample().item())
-        template = int(torch.distributions.Categorical(logits=edit_outputs_single["insert_template_logits"][0]).sample().item())
-        pitch = int(torch.distributions.Categorical(logits=edit_outputs_single["pitch_logits"][0, 0]).sample().item())
-        velocity = int(torch.distributions.Categorical(logits=edit_outputs_single["velocity_logits"][0, 0]).sample().item())
-        role = int(torch.distributions.Categorical(logits=edit_outputs_single["role_logits"][0, 0]).sample().item())
+        host_logits = edit_outputs_single["insert_host_logits"][0].clone()
+        template_logits = edit_outputs_single["insert_template_logits"][0].clone()
+        if host_logits.shape[-1] > 1:
+            host_logits[0] = -1e9
+        if template_logits.shape[-1] > 1:
+            template_logits[0] = -1e9
+        host = int(torch.distributions.Categorical(logits=host_logits).sample().item())
+        template = int(torch.distributions.Categorical(logits=template_logits).sample().item())
+        pitch = int(torch.distributions.Categorical(logits=edit_outputs_single["insert_pitch_logits"][0]).sample().item())
+        velocity = int(torch.distributions.Categorical(logits=edit_outputs_single["insert_velocity_logits"][0]).sample().item())
+        role = int(torch.distributions.Categorical(logits=edit_outputs_single["insert_role_logits"][0]).sample().item())
+        if host <= 0 or template <= 0:
+            return state
         move = EditMove(EditMoveType.INSERT_NOTE, host=host, template=template, pitch_token=pitch, velocity=velocity, role=role)
         return apply_edit_move(state, move)
 
     if move_type == int(EditMoveType.DELETE_NOTE):
+        if state.num_notes <= 0:
+            return state
         return apply_edit_move(state, EditMove(EditMoveType.DELETE_NOTE, note_idx=note_idx))
 
     if move_type == int(EditMoveType.SUBSTITUTE_CONTENT):
-        pitch_logits = edit_outputs_single["pitch_logits"][0, note_idx].clone()
-        velocity_logits = edit_outputs_single["velocity_logits"][0, note_idx].clone()
-        role_logits = edit_outputs_single["role_logits"][0, note_idx].clone()
-
-        current_pitch = int(state.note_attrs["pitch_token"][note_idx]) if note_idx < state.num_notes else 0
-        current_velocity = int(state.note_attrs["velocity"][note_idx]) if note_idx < state.num_notes else 0
-        current_role = int(state.note_attrs["role"][note_idx]) if note_idx < state.num_notes else 0
-
-        if current_pitch < pitch_logits.shape[-1]:
-            pitch_logits[current_pitch] = -1e9
-        if current_velocity < velocity_logits.shape[-1]:
-            velocity_logits[current_velocity] = -1e9
-        if current_role < role_logits.shape[-1]:
-            role_logits[current_role] = -1e9
-
+        if state.num_notes <= 0:
+            return state
+        pitch = _sample_offdiag_from_logits(
+            edit_outputs_single["pitch_logits"][0, note_idx],
+            int(state.note_attrs["pitch_token"][note_idx]),
+        )
+        velocity = _sample_offdiag_from_logits(
+            edit_outputs_single["velocity_logits"][0, note_idx],
+            int(state.note_attrs["velocity"][note_idx]),
+        )
+        role = _sample_offdiag_from_logits(
+            edit_outputs_single["role_logits"][0, note_idx],
+            int(state.note_attrs["role"][note_idx]),
+        )
+        if pitch is None or velocity is None or role is None:
+            return state
         move = EditMove(
             EditMoveType.SUBSTITUTE_CONTENT,
             note_idx=note_idx,
-            pitch_token=int(torch.distributions.Categorical(logits=pitch_logits).sample().item()),
-            velocity=int(torch.distributions.Categorical(logits=velocity_logits).sample().item()),
-            role=int(torch.distributions.Categorical(logits=role_logits).sample().item()),
+            pitch_token=pitch,
+            velocity=velocity,
+            role=role,
         )
         return apply_edit_move(state, move)
 
     if move_type == int(EditMoveType.SUBSTITUTE_HOST):
-        logits = edit_outputs_single["host_logits"][0, note_idx].clone()
-        current = int(state.host[note_idx]) if note_idx < state.num_notes else 0
-        if current < logits.shape[-1]:
-            logits[current] = -1e9
-        host = int(torch.distributions.Categorical(logits=logits).sample().item())
+        if state.num_notes <= 0:
+            return state
+        host = _sample_offdiag_from_logits(edit_outputs_single["host_logits"][0, note_idx], int(state.host[note_idx]))
+        if host is None:
+            return state
         return apply_edit_move(state, EditMove(EditMoveType.SUBSTITUTE_HOST, note_idx=note_idx, host=host))
 
     if move_type == int(EditMoveType.SUBSTITUTE_TEMPLATE):
-        logits = edit_outputs_single["template_logits"][0, note_idx].clone()
-        current = int(state.template[note_idx]) if note_idx < state.num_notes else 0
-        if current < logits.shape[-1]:
-            logits[current] = -1e9
-        template = int(torch.distributions.Categorical(logits=logits).sample().item())
+        if state.num_notes <= 0:
+            return state
+        template = _sample_offdiag_from_logits(
+            edit_outputs_single["template_logits"][0, note_idx],
+            int(state.template[note_idx]),
+        )
+        if template is None:
+            return state
         return apply_edit_move(state, EditMove(EditMoveType.SUBSTITUTE_TEMPLATE, note_idx=note_idx, template=template))
 
-    src = int(torch.distributions.Categorical(logits=edit_outputs_single["span_src_logits"][0]).sample().item())
-    dst = int(torch.distributions.Categorical(logits=edit_outputs_single["span_dst_logits"][0]).sample().item())
-    rel_logits = edit_outputs_single["span_rel_logits"][0, src, dst].clone()
-    current_rel = int(state.e_ss[src][dst]) if src < state.num_spans and dst < state.num_spans else 0
-    if current_rel < rel_logits.shape[-1]:
-        rel_logits[current_rel] = -1e9
-    rel = int(torch.distributions.Categorical(logits=rel_logits).sample().item())
+    if state.num_spans <= 0:
+        return state
+    src = int(torch.distributions.Categorical(logits=edit_outputs_single["span_src_logits"][0, : state.num_spans]).sample().item())
+    dst = int(torch.distributions.Categorical(logits=edit_outputs_single["span_dst_logits"][0, : state.num_spans]).sample().item())
+    rel = _sample_offdiag_from_logits(
+        edit_outputs_single["span_rel_logits"][0, src, dst],
+        int(state.e_ss[src][dst]),
+    )
+    if rel is None:
+        return state
     move = EditMove(EditMoveType.SUBSTITUTE_SPAN_RELATION, span_src=src, span_dst=dst, relation=rel)
     return apply_edit_move(state, move)

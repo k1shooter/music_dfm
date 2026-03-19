@@ -12,6 +12,7 @@ from music_graph_dfm.representation.rhythm_templates import RhythmTemplateVocab
 from music_graph_dfm.representation.state import FSNTGV2State
 from music_graph_dfm.training.runner import generate_samples_from_checkpoint
 from music_graph_dfm.utils.io import load_json, save_json, write_jsonl
+from music_graph_dfm.utils.midi import save_state_midi
 
 
 def _load_codecs(data_root: Path) -> tuple[RhythmTemplateVocab, PitchTokenCodec]:
@@ -43,6 +44,15 @@ def evaluate_sample_directory(
     return report
 
 
+def _load_checkpoint_extra(checkpoint: Path) -> dict:
+    try:
+        import torch
+    except Exception:
+        return {}
+    payload = torch.load(checkpoint, map_location="cpu")
+    return dict(payload.get("extra", {}))
+
+
 def evaluate_reference_split(data_root: Path, split: str = "test", out_path: Path | None = None) -> Dict[str, object]:
     ds = FSNTGV2JSONDataset(data_root / f"{split}.jsonl")
     rhythm, pitch = _load_codecs(data_root)
@@ -66,6 +76,9 @@ def generate_from_checkpoint(
     num_steps: int = 96,
     device: str = "cpu",
     sampler_mode: str = "dfm",
+    whole_song_mode: str | None = None,
+    whole_song_segments: int = 4,
+    export_midi: bool = False,
 ) -> List[FSNTGV2State]:
     samples = generate_samples_from_checkpoint(
         checkpoint=checkpoint,
@@ -75,9 +88,17 @@ def generate_from_checkpoint(
         num_steps=num_steps,
         device=device,
         sampler_mode=sampler_mode,
+        whole_song_mode=whole_song_mode,
+        whole_song_segments=whole_song_segments,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(out_dir / "samples.jsonl", (s.to_dict() for s in samples))
+    if export_midi:
+        rhythm, pitch = _load_codecs(data_root)
+        midi_dir = out_dir / "midi"
+        midi_dir.mkdir(parents=True, exist_ok=True)
+        for i, state in enumerate(samples):
+            save_state_midi(state, rhythm, pitch, midi_dir / f"sample_{i:04d}.mid")
     return samples
 
 
@@ -89,10 +110,14 @@ def evaluate_checkpoint(
     num_steps: int = 96,
     device: str = "cpu",
     sampler_mode: str = "dfm",
+    whole_song_mode: str | None = None,
+    whole_song_segments: int = 4,
+    export_midi: bool = False,
     out_dir: Path | None = None,
     out_path: Path | None = None,
 ) -> Dict[str, object]:
     out_dir = out_dir or Path("artifacts/eval_samples")
+    ckpt_extra = _load_checkpoint_extra(checkpoint)
     samples = generate_from_checkpoint(
         checkpoint=checkpoint,
         data_root=data_root,
@@ -102,6 +127,9 @@ def evaluate_checkpoint(
         num_steps=num_steps,
         device=device,
         sampler_mode=sampler_mode,
+        whole_song_mode=whole_song_mode,
+        whole_song_segments=whole_song_segments,
+        export_midi=export_midi,
     )
 
     refs = FSNTGV2JSONDataset(data_root / f"{split}.jsonl")
@@ -114,6 +142,13 @@ def evaluate_checkpoint(
         "num_examples": n,
         "metrics": aggregate_metrics(rows),
         "sample_dir": str(out_dir),
+        "whole_song_mode": whole_song_mode or "segment",
+        "checkpoint_meta": {
+            "mode": ckpt_extra.get("mode", ""),
+            "graph_kernel": ckpt_extra.get("graph_kernel", {}),
+            "model_cfg": ckpt_extra.get("model_cfg", {}),
+            "vocab_sizes": ckpt_extra.get("vocab_sizes", {}),
+        },
     }
     if out_path is not None:
         save_json(out_path, report)

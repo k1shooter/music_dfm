@@ -22,6 +22,11 @@ AUX_NOTE_RELATIONS = [
     "sequential_same_role",
 ]
 
+GRAPH_KERNEL_APPROX_COORDS = [
+    "span.harm",
+    "note.pitch_token",
+]
+
 E_SS_NONE = 0
 
 COORD_ORDER = [

@@ -34,5 +34,7 @@ train:
   weight_decay: 0.0001
   beta_aux: 0.0
   beta_structure: 0.0
+  editflow_source_steps: 1
+  editflow_random_augmentation: false
   save_every: 1
   checkpoint_dir: artifacts/checkpoints_editflow

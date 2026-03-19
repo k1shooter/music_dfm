@@ -1,5 +1,23 @@
 # FSNTG-v2 Design Note
 
+## Method Status
+
+Trusted implementation parts:
+
+- FSNTG-v2 factorized state and coordinate set (`S,N,H,Q,E_SS`)
+- CTMC reverse sampler with strict off-diagonal jump semantics
+- deterministic auxiliary note-note graph from decoded timing only
+- harmony-relative pitch-token encode/decode under host span context
+- end-to-end evaluation modes (`checkpoint`, `sample-dir`, `reference`)
+
+Approximate / experimental parts:
+
+- graph-kernel path for `span.harm` and `note.pitch_token`:
+  - target distribution uses kernel-mixture surrogate
+  - target rates use off-diagonal Poisson approximation
+  - runtime logs and checkpoint/eval metadata explicitly mark this as approximate
+- editflow uses explicit edit coordinates, heads, sampler, and loss, but source-state construction is prior-driven CTMC noising rather than a proven exact bridge process
+
 ## Representation
 
 State:
@@ -28,9 +46,10 @@ is used for role-consistent degree snapping before absolute reconstruction.
 
 Provided API:
 
-- `encode_pitch_token(...)`
-- `decode_pitch_token(...)`
-- `PitchTokenCodec.compatibility_table(...)`
+- `encode_pitch_token(abs_pitch, host_span_state)`
+- `decode_pitch_token(token, host_span_state)`
+- `compatibility_table(host_span_state, token)`
+- `nearest_token_projection(abs_pitch, host_span_state, ...)`
 - `PitchTokenCodec.absolute_pitch(...)`
 
 ## Rhythmic Templates
@@ -74,7 +93,10 @@ Source distribution is factorized over coordinates with sparse priors for struct
 
 Graph-kernel mode is optional for `span.harm` / `note.pitch_token` and marked approximate.
 
-Approximate target rate for graph-kernel mode uses kernel-derived target distributions and off-diagonal Poisson matching.
+Approximate target distribution and rate in graph-kernel mode:
+
+- distribution: `q_t=(1-kappa)delta_x0 + kappa*K[x1,:]`
+- rate approximation: off-diagonal Poisson matching with `eta*K[x1,v]`, `v != x_t`
 
 ## Reverse Generator and CTMC Sampler
 
@@ -117,8 +139,9 @@ Includes:
 - edit-rate heads (`forward_edit`)
 - edit sampler (`sample_edit_ctmc_step`)
 - edit training objective (`editflow_rate_loss`)
+- forward noising for editflow training via edit-CTMC prior (`sample_forward_edit_ctmc_source`)
 
-This is separate from fixed-slot DFM training.
+This is separate from fixed-slot DFM training. Random edit augmentation remains optional and is not treated as editflow.
 
 ## Decode Projection
 

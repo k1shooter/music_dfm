@@ -104,6 +104,9 @@ def test_checkpoint_metadata_roundtrip(tmp_path: Path):
     assert "model_cfg" in extra
     assert "vocab_sizes" in extra
     assert "data_meta" in extra
+    assert "graph_kernel" in extra
+    assert extra["graph_kernel"]["enabled"] is False
+    assert extra["graph_kernel"]["approximate"] is False
     assert extra["data_meta"]["stats"]["schema_version"] == "fsntg_v2_pop909_v1"
 
     samples = generate_samples_from_checkpoint(
