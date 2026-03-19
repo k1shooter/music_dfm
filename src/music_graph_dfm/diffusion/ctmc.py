@@ -31,6 +31,7 @@ def ctmc_jump_step(
     h: float,
     batch: dict,
     guidance_fn: Callable[[str, Dict[str, "torch.Tensor"], "torch.Tensor", "torch.Tensor"], tuple["torch.Tensor", "torch.Tensor"]] | None = None,
+    debug_assertions: bool = False,
 ) -> Dict[str, "torch.Tensor"]:
     """One CTMC step: jump destinations exclude current state."""
     try:
@@ -60,15 +61,18 @@ def ctmc_jump_step(
 
         p_jump = 1.0 - torch.exp(-float(h) * lam)
         p_jump = torch.clamp(p_jump, min=0.0, max=1.0)
-        jump = torch.bernoulli(p_jump).to(torch.bool) & has_mass
+        mask = masks[coord]
+        jump = torch.bernoulli(p_jump).to(torch.bool) & has_mass & mask
 
         vocab = pi_off.shape[-1]
         current_oh = torch.nn.functional.one_hot(xt.clamp(min=0, max=vocab - 1), num_classes=vocab).to(torch.float32)
         safe_probs = torch.where(has_mass.unsqueeze(-1), pi_off, current_oh)
         sample = torch.distributions.Categorical(probs=safe_probs).sample()
         updated = torch.where(jump, sample, xt)
+        if debug_assertions and torch.any(jump):
+            if bool(torch.any((updated == xt) & jump).item()):
+                raise AssertionError(f"Off-diagonal CTMC violation on coord={coord}: jump landed on current state.")
 
-        mask = masks[coord]
         x_next[coord] = torch.where(mask, updated, xt)
 
     x_next = enforce_state_constraints(x_next, batch)
@@ -83,6 +87,7 @@ def ctmc_sample(
     t_start: float = 1e-3,
     t_end: float = 0.999,
     guidance_fn=None,
+    debug_assertions: bool = False,
 ):
     try:
         import torch
@@ -97,6 +102,13 @@ def ctmc_sample(
         h = float(ts[i + 1] - ts[i])
         batch_xt = coords_to_batch(base_batch, x_t)
         outputs = model(batch_xt, t)
-        x_t = ctmc_jump_step(x_t, outputs, h, batch_xt, guidance_fn=guidance_fn)
+        x_t = ctmc_jump_step(
+            x_t,
+            outputs,
+            h,
+            batch_xt,
+            guidance_fn=guidance_fn,
+            debug_assertions=debug_assertions,
+        )
 
     return x_t

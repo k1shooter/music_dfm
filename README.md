@@ -18,8 +18,10 @@ Approximate / experimental:
 - graph-kernel path for `span.harm_root` and `note.pitch_token` uses an explicit approximation
   - target distribution: `q_t=(1-kappa)delta_x0 + kappa*K[x1,:]`
   - target rate approximation: off-diagonal Poisson matching with `eta*K[x1,v]`
-  - this mode logs warnings and is saved in checkpoint/eval metadata
-- one-step-oracle editflow supervision only (`editflow_source_steps` must be `1` unless explicitly overriding for experimental work)
+  - this mode logs loud warnings and is saved in checkpoint/sample/eval metadata
+- editflow multistep mode is experimental (`editflow_mode=multistep_segment`)
+  - training uses trajectory-segment supervision over adjacent forward-CTMC states
+  - this is a tractable approximation to full expanded-state marginalization
 - random edit augmentation remains optional and separately named (`editflow_random_augmentation`), and is not core editflow
 
 ## Modes
@@ -30,8 +32,11 @@ Approximate / experimental:
   - baseline DFM + decoded-timing aux note graph + music structure penalties
 - Experimental graph-kernel mode:
   - optional approximate path for `span.harm_root` / `note.pitch_token`
-- One-step-oracle editflow:
+- Stable one-step-oracle editflow:
   - explicit edit coordinates + edit heads/loss/sampler, trained with one-step oracle supervision
+- Experimental multistep editflow:
+  - trajectory-segment supervision from forward edit-CTMC trajectories (`multistep_segment`)
+  - separate multistep edit sampler path at generation time
 
 ## Repository Layout
 
@@ -101,13 +106,23 @@ Structure-loss efficiency knobs are available in config:
 
 ### 4) Train EditFlow
 
+Stable one-step oracle mode:
+
 ```bash
 python scripts/train_editflow.py \
   --config configs/train/editflow.yaml \
+  --editflow-mode one_step_oracle \
   --editflow-source-steps 1
 ```
 
-Multi-step source noising is rejected by default in training; current method is one-step oracle editflow.
+Experimental multistep trajectory-segment mode:
+
+```bash
+python scripts/train_editflow.py \
+  --config configs/train/editflow.yaml \
+  --editflow-mode multistep_segment \
+  --editflow-source-steps 4
+```
 
 Optional augmentation-only mode (not core editflow algorithm):
 
@@ -126,6 +141,8 @@ python scripts/sample.py \
   --num-samples 16 \
   --export-midi
 ```
+
+`scripts/sample.py` writes `sampling_metadata.json` with graph-kernel/editflow experimental flags.
 
 Whole-song long-context mode:
 
@@ -153,6 +170,8 @@ python scripts/eval.py \
   --checkpoint artifacts/checkpoints/epoch_20.pt \
   --data-root data/cache/pop909_fsntg_v2
 ```
+
+Evaluation reports include `experimental` and checkpoint/sample metadata fields to surface approximate modes.
 
 Whole-song comparison report (long-context vs stitching baseline):
 

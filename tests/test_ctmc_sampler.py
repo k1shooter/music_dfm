@@ -40,7 +40,7 @@ def _base_state():
 
 def test_jump_destination_is_offdiagonal():
     x_t, outputs, batch = _base_state()
-    x_next = ctmc_jump_step(x_t=x_t, outputs=outputs, h=1.0, batch=batch)
+    x_next = ctmc_jump_step(x_t=x_t, outputs=outputs, h=1.0, batch=batch, debug_assertions=True)
 
     for coord in COORD_ORDER:
         mask = batch["span_mask"] if coord.startswith("span.") else batch["note_mask"]
@@ -73,6 +73,16 @@ def test_masked_coordinates_always_stay():
         else:
             mask = batch["note_mask"]
         assert torch.equal(x_next[coord][~mask], x_t[coord][~mask])
+
+
+def test_inactive_notes_force_zero_host_template_after_step():
+    x_t, outputs, batch = _base_state()
+    x_t["note.active"][0, 1] = 0
+    x_t["note.host"][0, 1] = 2
+    x_t["note.template"][0, 1] = 4
+    x_next = ctmc_jump_step(x_t=x_t, outputs=outputs, h=1.0, batch=batch, debug_assertions=True)
+    assert int(x_next["note.host"][0, 1].item()) == 0
+    assert int(x_next["note.template"][0, 1].item()) == 0
 
 
 def test_degenerate_offdiag_mass_forces_stay():

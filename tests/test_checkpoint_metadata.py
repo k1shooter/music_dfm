@@ -9,6 +9,7 @@ torch = pytest.importorskip("torch", exc_type=ImportError)
 from music_graph_dfm.representation.pitch_codec import PitchTokenCodec
 from music_graph_dfm.representation.rhythm_templates import RhythmTemplateVocab
 from music_graph_dfm.representation.state import empty_state
+from music_graph_dfm.evaluation.pipeline import evaluate_checkpoint
 from music_graph_dfm.training.runner import generate_samples_from_checkpoint, run_training
 
 
@@ -170,3 +171,19 @@ def test_graph_kernel_warning_and_metadata_propagation(tmp_path: Path, caplog):
     assert gk["approximate"] is True
     assert gk["enabled"] is True
     assert "target_rate_approximation" in gk
+
+    report = evaluate_checkpoint(
+        checkpoint=ckpt_dir / "epoch_1.pt",
+        data_root=data_root,
+        split="test",
+        num_samples=1,
+        num_steps=2,
+        device="cpu",
+        sampler_mode="dfm",
+        out_dir=tmp_path / "eval_samples",
+        out_path=None,
+    )
+    assert report["experimental"] is True
+    assert report["checkpoint_meta"]["graph_kernel_is_approximate"] is True
+    sampling_meta = json.loads((tmp_path / "eval_samples" / "sampling_metadata.json").read_text(encoding="utf-8"))
+    assert sampling_meta["graph_kernel_experimental"] is True

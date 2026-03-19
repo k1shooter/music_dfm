@@ -16,8 +16,9 @@ Approximate / experimental parts:
   - target distribution uses kernel-mixture surrogate
   - target rates use off-diagonal Poisson approximation
   - runtime logs and checkpoint/eval metadata explicitly mark this as approximate
-- editflow training is currently **one-step oracle supervision** (`editflow_source_steps == 1` by default)
-- multi-step expanded-state editflow targets are future work unless explicitly enabled for experiments
+- editflow `multistep_segment` mode is experimental:
+  - supervision uses sampled trajectory segments from forward edit CTMC trajectories
+  - this is a tractable approximation to exact expanded-state marginalization
 
 ## Representation
 
@@ -116,6 +117,7 @@ Implementation details:
 7. if jump: sample from off-diagonal `pi`
 
 Stay probability is hazard-induced only.
+Optional debug assertions can enforce that any sampled jump never lands on the current category.
 
 ## Masking Rules
 
@@ -143,7 +145,22 @@ Includes:
 - forward noising for editflow training via edit-CTMC prior (`sample_forward_edit_ctmc_source`)
 
 This is separate from fixed-slot DFM training. Random edit augmentation remains optional and is not treated as editflow.
-Trainer enforces one-step oracle supervision by default and rejects multi-step source settings unless explicitly overridden.
+
+Training modes:
+
+- `one_step_oracle` (stable default):
+  - source is one forward edit-CTMC step (or optional augmentation)
+  - supervise one oracle reverse edit move
+- `multistep_segment` (experimental):
+  - sample `z_0 -> ... -> z_K` from forward edit CTMC
+  - choose adjacent segment `(z_k, z_{k+1})`
+  - supervise reverse move from `z_{k+1}` toward `z_k`
+  - avoids incorrectly supervising a multi-step-corrupted source with a single direct oracle-to-target move
+
+Sampling modes are also separated:
+
+- one-step edit sampler path
+- multistep edit sampler path with micro-steps per time slice
 
 ## Decode Projection
 
@@ -162,6 +179,11 @@ Evaluation modes:
 1. checkpoint -> generation -> metrics
 2. pre-generated sample directory
 3. reference-only sanity mode
+
+Reports include:
+
+- checkpoint/sample metadata fields for `editflow_mode`, graph-kernel target-rate mode
+- top-level `experimental` flag when approximate graph-kernel or experimental editflow mode is active
 
 Metrics include:
 

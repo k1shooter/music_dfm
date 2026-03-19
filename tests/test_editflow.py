@@ -156,3 +156,55 @@ def test_editflow_rejects_multistep_source_by_default(tmp_path: Path):
 
     with pytest.raises(ValueError, match="one-step oracle"):
         run_training(cfg)
+
+
+def test_editflow_multistep_segment_smoke(tmp_path: Path):
+    data_root = tmp_path / "cache"
+    _write_jsonl(data_root / "train.jsonl", [_make_train_state(0), _make_train_state(1), _make_train_state(2)])
+    _write_jsonl(data_root / "valid.jsonl", [_make_train_state(3)])
+    _write_jsonl(data_root / "test.jsonl", [_make_train_state(4)])
+    rhythm = RhythmTemplateVocab(top_k_per_meter=8, onset_bins=8)
+    rhythm.fit([(4, 0, 3, 0, 0), (4, 2, 3, 0, 0)])
+    pitch = PitchTokenCodec()
+    (data_root / "rhythm_templates.json").write_text(json.dumps(rhythm.to_dict()), encoding="utf-8")
+    (data_root / "pitch_codec.json").write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
+    (data_root / "stats.json").write_text(json.dumps({"schema_version": "fsntg_v2_pop909_v2"}), encoding="utf-8")
+    (data_root / "preprocessing_config.json").write_text(json.dumps({"span_resolution": "beat"}), encoding="utf-8")
+
+    ckpt_dir = tmp_path / "ckpt"
+    cfg = {
+        "seed": 7,
+        "device": "cpu",
+        "num_workers": 0,
+        "data_root": str(data_root),
+        "model": {
+            "kind": "full",
+            "hidden_dim": 32,
+            "num_layers": 1,
+            "num_heads": 2,
+            "dropout": 0.0,
+        },
+        "diffusion": {
+            "path_type": "mixture",
+            "schedule": {"span_shift": 0.2, "span_relation_shift": 0.35, "placement_shift": 0.55, "note_shift": 0.7, "temperature": 0.2},
+            "prior": {"active_on_prob": 0.2, "template_on_prob": 0.25, "e_ss_non_none_prob": 0.05},
+            "graph_kernel": {"enabled": False},
+        },
+        "train": {
+            "mode": "editflow",
+            "editflow_mode": "multistep_segment",
+            "epochs": 1,
+            "batch_size": 1,
+            "learning_rate": 1e-3,
+            "weight_decay": 0.0,
+            "save_every": 1,
+            "checkpoint_dir": str(ckpt_dir),
+            "editflow_source_steps": 3,
+        },
+    }
+
+    run_training(cfg)
+    payload = torch.load(ckpt_dir / "epoch_1.pt", map_location="cpu")
+    extra = payload["extra"]
+    assert extra["editflow_mode"] == "multistep_segment"
+    assert extra["editflow_is_experimental"] is True

@@ -28,6 +28,7 @@ diffusion:
 
 train:
   mode: editflow
+  editflow_mode: one_step_oracle
   epochs: 20
   batch_size: 4
   learning_rate: 0.0002

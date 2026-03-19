@@ -9,7 +9,7 @@ from pathlib import Path
 
 from music_graph_dfm.representation.pitch_codec import PitchTokenCodec
 from music_graph_dfm.representation.rhythm_templates import RhythmTemplateVocab
-from music_graph_dfm.training.runner import generate_samples_from_checkpoint
+from music_graph_dfm.training.runner import generate_samples_from_checkpoint, read_checkpoint_extra
 from music_graph_dfm.utils.io import load_json, write_jsonl
 from music_graph_dfm.utils.midi import save_state_midi
 
@@ -45,6 +45,18 @@ def main() -> None:
         whole_song_segments=args.whole_song_segments,
     )
     write_jsonl(out_dir / "samples.jsonl", (s.to_dict() for s in states))
+    ckpt_extra = read_checkpoint_extra(Path(args.checkpoint).expanduser().resolve())
+    sample_meta = {
+        "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
+        "sampler_mode": args.sampler_mode,
+        "whole_song_mode": args.whole_song_mode or "segment",
+        "graph_kernel": ckpt_extra.get("graph_kernel", {}),
+        "graph_kernel_target_rate_mode": ckpt_extra.get("graph_kernel_target_rate_mode", ""),
+        "graph_kernel_experimental": bool(ckpt_extra.get("graph_kernel_is_approximate", False)),
+        "editflow_mode": ckpt_extra.get("editflow_mode", ""),
+        "editflow_experimental": bool(ckpt_extra.get("editflow_is_experimental", False)),
+    }
+    (out_dir / "sampling_metadata.json").write_text(json.dumps(sample_meta, indent=2), encoding="utf-8")
 
     if args.export_midi:
         rhythm = RhythmTemplateVocab.from_dict(load_json(data_root / "rhythm_templates.json"))

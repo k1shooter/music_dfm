@@ -332,6 +332,37 @@ def sample_forward_edit_ctmc_step_from_prior(
     return apply_edit_move(state, move), move
 
 
+def sample_forward_edit_ctmc_trajectory(
+    target_state: FSNTGV2State,
+    vocab_sizes: Dict[str, int],
+    rng: random.Random,
+    num_steps: int = 1,
+    h: float = 1.0,
+    type_rates: Dict[EditMoveType, float] | None = None,
+) -> tuple[list[FSNTGV2State], list[EditMove | None]]:
+    """Sample a forward edit CTMC trajectory starting at target_state.
+
+    Returns:
+        states: [z_0, z_1, ..., z_K] with z_0=target_state and K=num_steps
+        moves: forward edits [m_0, ..., m_{K-1}] where z_{k+1}=T(z_k,m_k) (or stay for None)
+    """
+    out = target_state.copy()
+    steps = max(1, int(num_steps))
+    states = [out.copy()]
+    moves: list[EditMove | None] = []
+    for _ in range(steps):
+        out, move = sample_forward_edit_ctmc_step_from_prior(
+            state=out,
+            vocab_sizes=vocab_sizes,
+            rng=rng,
+            h=h,
+            type_rates=type_rates,
+        )
+        moves.append(move)
+        states.append(out.copy())
+    return states, moves
+
+
 def sample_forward_edit_ctmc_source(
     target_state: FSNTGV2State,
     vocab_sizes: Dict[str, int],
@@ -341,20 +372,57 @@ def sample_forward_edit_ctmc_source(
     type_rates: Dict[EditMoveType, float] | None = None,
 ) -> FSNTGV2State:
     """Generate an EditFlow source state by running a forward edit CTMC from target."""
-    out = target_state.copy()
-    steps = max(1, int(num_steps))
-    for _ in range(steps):
-        out, _ = sample_forward_edit_ctmc_step_from_prior(
-            state=out,
-            vocab_sizes=vocab_sizes,
-            rng=rng,
-            h=h,
-            type_rates=type_rates,
-        )
-    return out
+    states, _ = sample_forward_edit_ctmc_trajectory(
+        target_state=target_state,
+        vocab_sizes=vocab_sizes,
+        rng=rng,
+        num_steps=num_steps,
+        h=h,
+        type_rates=type_rates,
+    )
+    return states[-1]
 
 
-def editflow_rate_loss(edit_outputs: Dict[str, "torch.Tensor"], oracle_moves: Iterable[EditMove], eps: float = 1e-8):
+def sample_multistep_supervision_segment(
+    target_state: FSNTGV2State,
+    vocab_sizes: Dict[str, int],
+    rng: random.Random,
+    num_steps: int,
+    h: float,
+    type_rates: Dict[EditMoveType, float] | None = None,
+) -> tuple[FSNTGV2State, FSNTGV2State, EditMove | None, float]:
+    """Trajectory-segment supervision for multistep editflow training.
+
+    We sample a forward trajectory z_0 -> ... -> z_K from target z_0.
+    A random adjacent segment (z_k, z_{k+1}) is selected and the model is
+    supervised to predict one reverse move from z_{k+1} toward z_k.
+    """
+    states, moves = sample_forward_edit_ctmc_trajectory(
+        target_state=target_state,
+        vocab_sizes=vocab_sizes,
+        rng=rng,
+        num_steps=max(2, int(num_steps)),
+        h=h,
+        type_rates=type_rates,
+    )
+    valid = [k for k, move in enumerate(moves) if move is not None]
+    if not valid:
+        k = len(moves) - 1
+    else:
+        k = valid[rng.randrange(len(valid))]
+
+    source = states[k + 1].copy()
+    prev = states[k].copy()
+    reverse_move = derive_oracle_edit_move(source, prev)
+    t_value = float(k + 1) / float(max(1, len(moves)))
+    return source, prev, reverse_move, t_value
+
+
+def editflow_rate_loss(
+    edit_outputs: Dict[str, "torch.Tensor"],
+    oracle_moves: Iterable[EditMove | None],
+    eps: float = 1e-8,
+):
     """Edit-flow objective with type-level Poisson rate loss + argument CE losses."""
     try:
         import torch
@@ -370,15 +438,24 @@ def editflow_rate_loss(edit_outputs: Dict[str, "torch.Tensor"], oracle_moves: It
     lam_type = torch.nn.functional.softplus(edit_outputs["lambda_type"])  # [B, T]
     type_logits = edit_outputs["type_logits"]
 
-    type_targets = torch.tensor([int(m.move_type) if m is not None else 0 for m in oracle], device=type_logits.device)
-    chosen_rate = lam_type[torch.arange(batch_size, device=type_logits.device), type_targets]
+    valid_idx = [i for i, m in enumerate(oracle) if m is not None]
+    if not valid_idx:
+        # No-op batches can happen when forward steps produced only stay transitions.
+        return type_logits.sum() * 0.0
+
+    valid_oracle = [oracle[i] for i in valid_idx]
+    valid_index_tensor = torch.tensor(valid_idx, dtype=torch.long, device=type_logits.device)
+    lam_type = lam_type[valid_index_tensor]
+    type_logits = type_logits[valid_index_tensor]
+
+    type_targets = torch.tensor([int(m.move_type) for m in valid_oracle], device=type_logits.device)
+    chosen_rate = lam_type[torch.arange(type_targets.shape[0], device=type_logits.device), type_targets]
     poisson = chosen_rate - torch.log(chosen_rate + eps)
     type_ce = F.cross_entropy(type_logits, type_targets)
 
     arg_losses = []
-    for b, move in enumerate(oracle):
-        if move is None:
-            continue
+    for local_b, move in enumerate(valid_oracle):
+        b = int(valid_idx[local_b])
         if move.move_type in {EditMoveType.DELETE_NOTE, EditMoveType.SUBSTITUTE_CONTENT, EditMoveType.SUBSTITUTE_HOST, EditMoveType.SUBSTITUTE_TEMPLATE}:
             arg_losses.append(F.cross_entropy(edit_outputs["note_logits"][b : b + 1], torch.tensor([max(0, move.note_idx)], device=type_logits.device)))
 

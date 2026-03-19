@@ -16,6 +16,12 @@ def main() -> None:
     parser.add_argument("--config", type=str, default="configs/train/editflow.yaml")
     parser.add_argument("--data-root", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument(
+        "--editflow-mode",
+        type=str,
+        default="one_step_oracle",
+        choices=["one_step_oracle", "multistep_segment"],
+    )
     parser.add_argument("--editflow-source-steps", type=int, default=1)
     parser.add_argument("--allow-multistep-oracle", action="store_true")
     parser.add_argument("--editflow-random-augmentation", action="store_true")
@@ -23,6 +29,7 @@ def main() -> None:
 
     cfg = load_yaml(Path(args.config))
     cfg.setdefault("train", {})["mode"] = "editflow"
+    cfg["train"]["editflow_mode"] = str(args.editflow_mode)
     cfg["train"]["editflow_source_steps"] = int(args.editflow_source_steps)
     cfg["train"]["allow_multistep_oracle"] = bool(args.allow_multistep_oracle)
     cfg["train"]["editflow_random_augmentation"] = bool(args.editflow_random_augmentation)

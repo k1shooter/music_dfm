@@ -29,6 +29,10 @@ def evaluate_sample_directory(
 ) -> Dict[str, object]:
     sample_path = sample_dir / "samples.jsonl"
     generated = [FSNTGV2State.from_dict(row) for row in load_jsonl_like(sample_path)]
+    sampling_meta = {}
+    meta_path = sample_dir / "sampling_metadata.json"
+    if meta_path.exists():
+        sampling_meta = load_json(meta_path)
     refs = FSNTGV2JSONDataset(data_root / f"{reference_split}.jsonl")
     rhythm, pitch = _load_codecs(data_root)
 
@@ -38,6 +42,11 @@ def evaluate_sample_directory(
         "mode": "sample_directory",
         "num_examples": n,
         "metrics": aggregate_metrics(rows),
+        "sampling_meta": sampling_meta,
+        "experimental": bool(
+            sampling_meta.get("graph_kernel_experimental", False)
+            or sampling_meta.get("editflow_experimental", False)
+        ),
     }
     if out_path is not None:
         save_json(out_path, report)
@@ -80,6 +89,7 @@ def generate_from_checkpoint(
     whole_song_segments: int = 4,
     export_midi: bool = False,
 ) -> List[FSNTGV2State]:
+    ckpt_extra = _load_checkpoint_extra(checkpoint)
     samples = generate_samples_from_checkpoint(
         checkpoint=checkpoint,
         data_root=data_root,
@@ -93,6 +103,19 @@ def generate_from_checkpoint(
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(out_dir / "samples.jsonl", (s.to_dict() for s in samples))
+    save_json(
+        out_dir / "sampling_metadata.json",
+        {
+            "checkpoint": str(checkpoint),
+            "sampler_mode": sampler_mode,
+            "whole_song_mode": whole_song_mode or "segment",
+            "graph_kernel": ckpt_extra.get("graph_kernel", {}),
+            "graph_kernel_target_rate_mode": ckpt_extra.get("graph_kernel_target_rate_mode", ""),
+            "graph_kernel_experimental": bool(ckpt_extra.get("graph_kernel_is_approximate", False)),
+            "editflow_mode": ckpt_extra.get("editflow_mode", ""),
+            "editflow_experimental": bool(ckpt_extra.get("editflow_is_experimental", False)),
+        },
+    )
     if export_midi:
         rhythm, pitch = _load_codecs(data_root)
         midi_dir = out_dir / "midi"
@@ -143,10 +166,17 @@ def evaluate_checkpoint(
         "metrics": aggregate_metrics(rows),
         "sample_dir": str(out_dir),
         "whole_song_mode": whole_song_mode or "segment",
+        "experimental": bool(
+            ckpt_extra.get("graph_kernel_is_approximate", False)
+            or ckpt_extra.get("editflow_is_experimental", False)
+        ),
         "checkpoint_meta": {
             "mode": ckpt_extra.get("mode", ""),
             "graph_kernel": ckpt_extra.get("graph_kernel", {}),
             "graph_kernel_target_rate_mode": ckpt_extra.get("graph_kernel_target_rate_mode", ""),
+            "graph_kernel_is_approximate": bool(ckpt_extra.get("graph_kernel_is_approximate", False)),
+            "editflow_mode": ckpt_extra.get("editflow_mode", ""),
+            "editflow_is_experimental": bool(ckpt_extra.get("editflow_is_experimental", False)),
             "model_cfg": ckpt_extra.get("model_cfg", {}),
             "vocab_sizes": ckpt_extra.get("vocab_sizes", {}),
         },

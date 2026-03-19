@@ -15,6 +15,7 @@ from music_graph_dfm.diffusion.edit_flow import (
     derive_oracle_edit_move,
     editflow_rate_loss,
     random_edit_augmentation_step,
+    sample_multistep_supervision_segment,
     sample_forward_edit_ctmc_source,
     sample_edit_ctmc_step,
 )
@@ -132,6 +133,16 @@ def load_checkpoint(path: str | Path, model, optimizer=None):
     if optimizer is not None and "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])
     return payload
+
+
+def read_checkpoint_extra(path: str | Path) -> dict:
+    try:
+        import torch
+    except Exception:
+        return {}
+
+    payload = torch.load(Path(path), map_location="cpu")
+    return dict(payload.get("extra", {}))
 
 
 def _coords_to_states(coords: Dict[str, "torch.Tensor"], base_batch: dict) -> List[FSNTGV2State]:
@@ -286,10 +297,13 @@ def _init_training_context(cfg: dict):
     path_type = str(cfg["diffusion"].get("path_type", "mixture"))
     graph_kernel_enabled = bool(cfg["diffusion"].get("graph_kernel", {}).get("enabled", False))
     if path_type == "graph_kernel" and graph_kernel_enabled:
+        LOGGER.warning("=" * 88)
         LOGGER.warning(
-            "Graph-kernel path enabled for span.harm_root/note.pitch_token. "
+            "EXPERIMENTAL GRAPH-KERNEL MODE ENABLED for span.harm_root/note.pitch_token. "
             "Target rates use an approximate off-diagonal matching surrogate."
         )
+        LOGGER.warning("This run should be treated as experimental and reported as approximate.")
+        LOGGER.warning("=" * 88)
     if path_type == "graph_kernel" and not graph_kernel_enabled:
         LOGGER.warning(
             "path_type=graph_kernel but diffusion.graph_kernel.enabled=false; falling back to mixture kernels map."
@@ -514,14 +528,64 @@ def run_training_editflow(cfg: dict) -> dict:
     device = ctx["device"]
     epochs = int(ctx["epochs"])
     history = []
+    editflow_mode = str(cfg.get("train", {}).get("editflow_mode", "one_step_oracle"))
     source_steps = int(cfg.get("train", {}).get("editflow_source_steps", 1))
     use_random_aug = bool(cfg.get("train", {}).get("editflow_random_augmentation", False))
     allow_multistep_oracle = bool(cfg.get("train", {}).get("allow_multistep_oracle", False))
-    if source_steps != 1 and not allow_multistep_oracle:
+    if editflow_mode not in {"one_step_oracle", "multistep_segment"}:
+        raise ValueError("train.editflow_mode must be one of: one_step_oracle, multistep_segment")
+    if editflow_mode == "one_step_oracle" and source_steps != 1 and not allow_multistep_oracle:
         raise ValueError(
-            "Current editflow training supports one-step oracle supervision only. "
-            "Set train.editflow_source_steps=1."
+            "one-step oracle mode supports source_steps=1 by default. "
+            "Set train.editflow_source_steps=1 or enable allow_multistep_oracle for experiments."
         )
+    if editflow_mode == "multistep_segment" and source_steps < 2:
+        raise ValueError("multistep_segment mode requires train.editflow_source_steps >= 2")
+    if editflow_mode == "multistep_segment" and use_random_aug:
+        raise ValueError("editflow_random_augmentation cannot be used with multistep_segment mode")
+
+    if editflow_mode == "multistep_segment":
+        LOGGER.warning(
+            "EditFlow multistep_segment mode is experimental. "
+            "Supervision uses sampled trajectory segments, not exact full marginalization."
+        )
+
+    def _build_edit_supervision_batch(target_states):
+        source_states: list[FSNTGV2State] = []
+        oracle = []
+        t_values: list[float] = []
+
+        if editflow_mode == "multistep_segment":
+            for st in target_states:
+                source_state, prev_state, move, t_value = sample_multistep_supervision_segment(
+                    target_state=st,
+                    vocab_sizes=vocab_sizes,
+                    rng=rng,
+                    num_steps=max(2, source_steps),
+                    h=1.0 / max(1, source_steps),
+                )
+                source_states.append(source_state)
+                oracle.append(move if move is not None else derive_oracle_edit_move(source_state, prev_state))
+                t_values.append(float(t_value))
+            return source_states, oracle, t_values
+
+        # one_step_oracle (stable baseline)
+        if use_random_aug:
+            source_states = [random_edit_augmentation_step(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
+        else:
+            source_states = [
+                sample_forward_edit_ctmc_source(
+                    target_state=st,
+                    vocab_sizes=vocab_sizes,
+                    rng=rng,
+                    num_steps=max(1, source_steps),
+                    h=1.0 / max(1, source_steps),
+                )
+                for st in target_states
+            ]
+        oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
+        t_values = [rng.uniform(0.01, 0.99) for _ in source_states]
+        return source_states, oracle, t_values
 
     for epoch in range(epochs):
         model.train()
@@ -530,26 +594,9 @@ def run_training_editflow(cfg: dict) -> dict:
 
         for states in train_loader:
             optimizer.zero_grad(set_to_none=True)
-            target_states = states
-            if use_random_aug:
-                source_states = [
-                    random_edit_augmentation_step(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states
-                ]
-            else:
-                source_states = [
-                    sample_forward_edit_ctmc_source(
-                        target_state=st,
-                        vocab_sizes=vocab_sizes,
-                        rng=rng,
-                        num_steps=source_steps,
-                        h=1.0 / max(1, source_steps),
-                    )
-                    for st in target_states
-                ]
-            oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
-
+            source_states, oracle, t_values = _build_edit_supervision_batch(states)
             batch = _move_to_device(collate_states(source_states), device)
-            t = torch.tensor(rng.uniform(0.01, 0.99), device=device)
+            t = torch.tensor(t_values, device=device)
             edit_outputs = model.forward_edit(batch, t)
             loss = editflow_rate_loss(edit_outputs, oracle)
 
@@ -566,25 +613,9 @@ def run_training_editflow(cfg: dict) -> dict:
         vb = 0
         with torch.no_grad():
             for states in valid_loader:
-                target_states = states
-                if use_random_aug:
-                    source_states = [
-                        random_edit_augmentation_step(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states
-                    ]
-                else:
-                    source_states = [
-                        sample_forward_edit_ctmc_source(
-                            target_state=st,
-                            vocab_sizes=vocab_sizes,
-                            rng=rng,
-                            num_steps=source_steps,
-                            h=1.0 / max(1, source_steps),
-                        )
-                        for st in target_states
-                    ]
-                oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
+                source_states, oracle, t_values = _build_edit_supervision_batch(states)
                 batch = _move_to_device(collate_states(source_states), device)
-                edit_outputs = model.forward_edit(batch, torch.tensor(0.5, device=device))
+                edit_outputs = model.forward_edit(batch, torch.tensor(t_values, device=device))
                 loss = editflow_rate_loss(edit_outputs, oracle)
                 valid_loss += float(loss.item())
                 vb += 1
@@ -595,7 +626,10 @@ def run_training_editflow(cfg: dict) -> dict:
             "train_loss": train_loss,
             "valid_loss": valid_loss,
             "mode": "editflow",
+            "editflow_mode": editflow_mode,
+            "source_steps": source_steps,
             "source_process": "random_augmentation" if use_random_aug else "forward_edit_ctmc",
+            "experimental": bool(editflow_mode != "one_step_oracle"),
         }
         history.append(summary)
         print(summary)
@@ -612,7 +646,17 @@ def run_training_editflow(cfg: dict) -> dict:
                     data_root=ctx["data_root"],
                     graph_kernel_enabled=bool(ctx["graph_kernel_enabled"]),
                 )
-                | {"editflow_mode": "one_step_oracle"},
+                | {
+                    "editflow_mode": editflow_mode,
+                    "editflow_source_steps": source_steps,
+                    "editflow_source_process": "random_augmentation" if use_random_aug else "forward_edit_ctmc",
+                    "editflow_is_experimental": bool(editflow_mode != "one_step_oracle"),
+                    "editflow_training_objective": (
+                        "trajectory_segment_supervision"
+                        if editflow_mode == "multistep_segment"
+                        else "one_step_oracle"
+                    ),
+                },
             )
 
     return {"history": history, "final": history[-1] if history else {}}
@@ -647,7 +691,7 @@ def _load_model_for_sampling(checkpoint: Path, data_root: Path, split: str, devi
     model = model.to(dev)
     model.load_state_dict(payload["model"])
     model.eval()
-    return ds, model, vocab_sizes, rhythm_vocab, pitch_codec, dev
+    return ds, model, vocab_sizes, rhythm_vocab, pitch_codec, dev, extra
 
 
 def _sample_state(model, vocab_sizes: dict, ref_state: FSNTGV2State, num_steps: int, device):
@@ -671,7 +715,7 @@ def _sample_state(model, vocab_sizes: dict, ref_state: FSNTGV2State, num_steps: 
     return _coords_to_states(coords, batch)[0]
 
 
-def _sample_state_edit(model, ref_state: FSNTGV2State, num_steps: int, device):
+def _sample_state_edit_one_step(model, ref_state: FSNTGV2State, num_steps: int, device):
     try:
         import torch
     except Exception as exc:  # pragma: no cover
@@ -687,6 +731,30 @@ def _sample_state_edit(model, ref_state: FSNTGV2State, num_steps: int, device):
     return state
 
 
+def _sample_state_edit_multistep(model, ref_state: FSNTGV2State, num_steps: int, device):
+    """Experimental multistep edit sampler with micro-steps per time slice."""
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("torch is required") from exc
+
+    state = ref_state.copy()
+    steps = max(1, int(num_steps))
+    for step in range(steps):
+        for micro in range(2):
+            t_val = (step + (micro + 1) / 2.0) / steps
+            t = torch.tensor(t_val, device=device)
+            batch = _move_to_device(collate_states([state]), device)
+            with torch.no_grad():
+                edit_outputs = model.forward_edit(batch, t)
+            state = sample_edit_ctmc_step(
+                state=state,
+                edit_outputs_single=edit_outputs,
+                h=0.5 / steps,
+            )
+    return state
+
+
 def generate_samples_from_checkpoint(
     checkpoint: Path,
     data_root: Path,
@@ -698,7 +766,7 @@ def generate_samples_from_checkpoint(
     whole_song_mode: str | None = None,
     whole_song_segments: int = 4,
 ) -> List[FSNTGV2State]:
-    ds, model, vocab_sizes, _rhythm_vocab, _pitch_codec, dev = _load_model_for_sampling(
+    ds, model, vocab_sizes, _rhythm_vocab, _pitch_codec, dev, ckpt_extra = _load_model_for_sampling(
         checkpoint=checkpoint,
         data_root=data_root,
         split=split,
@@ -706,7 +774,18 @@ def generate_samples_from_checkpoint(
     )
 
     out = []
-    sample_fn = _sample_state if sampler_mode == "dfm" else _sample_state_edit
+    if sampler_mode == "dfm":
+        editflow_mode = "n/a"
+        sample_fn = _sample_state
+    else:
+        editflow_mode = str(ckpt_extra.get("editflow_mode", "one_step_oracle"))
+        if editflow_mode == "multistep_segment":
+            sample_fn = _sample_state_edit_multistep
+        else:
+            sample_fn = _sample_state_edit_one_step
+
+    if sampler_mode == "editflow":
+        LOGGER.info("Sampling editflow with mode=%s", editflow_mode)
     for i in range(num_samples):
         if whole_song_mode is None:
             ref = ds[i % len(ds)]

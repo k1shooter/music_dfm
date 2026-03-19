@@ -141,7 +141,7 @@ def sample_forward_path(
     is_approx = len(used_kernel_coords) > 0
     if is_approx and not _GRAPH_KERNEL_WARNING_EMITTED:
         LOGGER.warning(
-            "Using approximate graph-kernel path for %s. "
+            "EXPERIMENTAL: Using approximate graph-kernel path for %s. "
             "Target distribution uses K[x1,:] mixture and target rates use off-diagonal Poisson approximation.",
             ",".join(used_kernel_coords),
         )
