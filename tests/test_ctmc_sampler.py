@@ -9,7 +9,8 @@ from music_graph_dfm.diffusion.ctmc import _normalize_offdiag, ctmc_jump_step
 def _base_state():
     x_t = {
         "span.key": torch.ones((1, 2), dtype=torch.long),
-        "span.harm": torch.ones((1, 2), dtype=torch.long),
+        "span.harm_root": torch.ones((1, 2), dtype=torch.long),
+        "span.harm_quality": torch.ones((1, 2), dtype=torch.long),
         "span.meter": torch.ones((1, 2), dtype=torch.long),
         "span.section": torch.ones((1, 2), dtype=torch.long),
         "span.reg_center": torch.ones((1, 2), dtype=torch.long),
@@ -72,3 +73,16 @@ def test_masked_coordinates_always_stay():
         else:
             mask = batch["note_mask"]
         assert torch.equal(x_next[coord][~mask], x_t[coord][~mask])
+
+
+def test_degenerate_offdiag_mass_forces_stay():
+    x_t, outputs, batch = _base_state()
+    for coord in COORD_ORDER:
+        logits = torch.full_like(outputs[coord]["logits"], fill_value=-100.0)
+        logits[..., 1] = 100.0  # all mass on current category only
+        outputs[coord]["logits"] = logits
+        outputs[coord]["lambda"] = torch.full_like(outputs[coord]["lambda"], fill_value=80.0)
+
+    x_next = ctmc_jump_step(x_t=x_t, outputs=outputs, h=1.0, batch=batch)
+    for coord in COORD_ORDER:
+        assert torch.equal(x_next[coord], x_t[coord])

@@ -9,7 +9,8 @@ from music_graph_dfm.diffusion.losses import rate_matching_loss
 def _dummy_inputs():
     x_t = {
         "span.key": torch.tensor([[0]]),
-        "span.harm": torch.tensor([[0]]),
+        "span.harm_root": torch.tensor([[0]]),
+        "span.harm_quality": torch.tensor([[1]]),
         "span.meter": torch.tensor([[0]]),
         "span.section": torch.tensor([[0]]),
         "span.reg_center": torch.tensor([[0]]),
@@ -45,7 +46,8 @@ def _dummy_inputs():
     eta = {k: 1.0 for k in COORD_ORDER}
     masks = {
         "span.key": torch.tensor([[True]]),
-        "span.harm": torch.tensor([[True]]),
+        "span.harm_root": torch.tensor([[True]]),
+        "span.harm_quality": torch.tensor([[True]]),
         "span.meter": torch.tensor([[True]]),
         "span.section": torch.tensor([[True]]),
         "span.reg_center": torch.tensor([[True]]),

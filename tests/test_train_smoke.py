@@ -22,7 +22,8 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def _make_state(seed: int):
     st = empty_state(num_spans=2, num_notes=2)
     st.span_attrs["key"] = [0, 0]
-    st.span_attrs["harm"] = [0, 7]
+    st.span_attrs["harm_root"] = [0, 7]
+    st.span_attrs["harm_quality"] = [1, 3]
     st.span_attrs["meter"] = [4, 4]
     st.span_attrs["section"] = [0, 0]
     st.span_attrs["reg_center"] = [4, 4]
@@ -157,4 +158,7 @@ def test_end_to_end_train_editflow_smoke(tmp_path: Path):
     result = run_training(cfg)
     assert result["final"]["epoch"] == 1
     assert result["final"]["mode"] == "editflow"
-    assert (ckpt_dir / "epoch_1.pt").exists()
+    ckpt_path = ckpt_dir / "epoch_1.pt"
+    assert ckpt_path.exists()
+    payload = torch.load(ckpt_path, map_location="cpu")
+    assert payload["extra"]["editflow_mode"] == "one_step_oracle"

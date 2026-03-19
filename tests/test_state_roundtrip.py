@@ -11,7 +11,8 @@ def _state() -> FSNTGV2State:
     return FSNTGV2State(
         span_attrs={
             "key": [0, 2],
-            "harm": [0, 7],
+            "harm_root": [0, 7],
+            "harm_quality": [1, 3],
             "meter": [4, 4],
             "section": [0, 1],
             "reg_center": [4, 4],

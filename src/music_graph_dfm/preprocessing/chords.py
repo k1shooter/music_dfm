@@ -32,25 +32,44 @@ NOTE_NAME_TO_PC = {
 }
 
 
-def parse_chord_label(label: str) -> int:
-    """Extract root pitch class from symbolic chord label."""
+def parse_chord_label(label: str) -> tuple[int, int]:
+    """Extract `(root_pc, quality_id)` from symbolic chord label."""
     s = label.strip()
     if not s or s.upper() in {"N", "NC", "NO_CHORD"}:
-        return 0
+        return 0, 0
     match = re.match(r"^([A-G](?:#|b)?)", s)
     if not match:
-        return 0
-    return int(NOTE_NAME_TO_PC.get(match.group(1), 0))
+        return 0, 0
+
+    root = int(NOTE_NAME_TO_PC.get(match.group(1), 0))
+    lower = s.lower()
+    if "dim" in lower or "o" in lower:
+        quality = 4
+    elif "aug" in lower or "+" in lower:
+        quality = 5
+    elif "sus" in lower:
+        quality = 6
+    elif "maj" in lower:
+        quality = 1
+    elif lower.startswith(match.group(1).lower() + "m") and "maj" not in lower:
+        quality = 2
+    elif "min" in lower:
+        quality = 2
+    elif "7" in lower:
+        quality = 3
+    else:
+        quality = 1
+    return root, quality
 
 
-def load_pop909_chords(song_dir: Path) -> List[Tuple[int, int, int, int]]:
-    """Return intervals as (start_tick, end_tick, key_pc, harmony_root_pc)."""
+def load_pop909_chords(song_dir: Path) -> List[Tuple[int, int, int, int, int]]:
+    """Return intervals as `(start_tick, end_tick, key_pc, harmony_root_pc, harmony_quality_id)`."""
     candidates = [song_dir / "chord_midi.txt", song_dir / "chord_audio.txt", song_dir / "chord.txt"]
     path = next((p for p in candidates if p.exists()), None)
     if path is None:
         return []
 
-    raw_rows: List[Tuple[int, int, int]] = []
+    raw_rows: List[Tuple[int, int, int, int]] = []
     roots = Counter()
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = line.strip()
@@ -64,9 +83,9 @@ def load_pop909_chords(song_dir: Path) -> List[Tuple[int, int, int, int]]:
             end = int(float(parts[1]))
         except Exception:
             continue
-        root = parse_chord_label(parts[2])
-        raw_rows.append((start, end, root))
+        root, quality = parse_chord_label(parts[2])
+        raw_rows.append((start, end, root, quality))
         roots[root] += 1
 
     tonic = roots.most_common(1)[0][0] if roots else 0
-    return [(s, e, tonic, root) for s, e, root in raw_rows]
+    return [(s, e, tonic, root, quality) for s, e, root, quality in raw_rows]

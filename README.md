@@ -6,7 +6,7 @@ FSNTG-v2 (Factorized Span-Note Template Graph v2) for discrete flow matching and
 
 Trusted:
 - FSNTG-v2 primary state: `X = (S, N, H, Q, E_SS)` with diffusion over
-  - span channels (`key,harm,meter,section,reg_center`)
+  - span channels (`key,harm_root,harm_quality,meter,section,reg_center`)
   - note channels (`active,pitch_token,velocity,role`)
   - `note.host`, `note.template`
   - `e_ss.relation`
@@ -15,11 +15,23 @@ Trusted:
 - script-first preprocessing/training/sampling/evaluation pipeline
 
 Approximate / experimental:
-- graph-kernel path for `span.harm` and `note.pitch_token` uses an explicit approximation
+- graph-kernel path for `span.harm_root` and `note.pitch_token` uses an explicit approximation
   - target distribution: `q_t=(1-kappa)delta_x0 + kappa*K[x1,:]`
   - target rate approximation: off-diagonal Poisson matching with `eta*K[x1,v]`
   - this mode logs warnings and is saved in checkpoint/eval metadata
-- editflow source-state construction is CTMC-prior-driven by default; random edit augmentation remains optional and separately named (`editflow_random_augmentation`)
+- one-step-oracle editflow supervision only (`editflow_source_steps` must be `1` unless explicitly overriding for experimental work)
+- random edit augmentation remains optional and separately named (`editflow_random_augmentation`), and is not core editflow
+
+## Modes
+
+- Baseline DFM:
+  - mixture path (default), factorized FSNTG-v2 coordinates, structure-first schedule
+- FSNTG-v2 full method in this repo:
+  - baseline DFM + decoded-timing aux note graph + music structure penalties
+- Experimental graph-kernel mode:
+  - optional approximate path for `span.harm_root` / `note.pitch_token`
+- One-step-oracle editflow:
+  - explicit edit coordinates + edit heads/loss/sampler, trained with one-step oracle supervision
 
 ## Repository Layout
 
@@ -81,6 +93,12 @@ python scripts/preprocess.py \
 python scripts/train.py --config configs/train/default.yaml
 ```
 
+Structure-loss efficiency knobs are available in config:
+- `train.structure_loss_every_k_steps`
+- `train.structure_loss_subsample_notes`
+- `train.structure_loss_subsample_pairs`
+- `train.fast_music_loss_only`
+
 ### 4) Train EditFlow
 
 ```bash
@@ -89,7 +107,9 @@ python scripts/train_editflow.py \
   --editflow-source-steps 1
 ```
 
-Optional augmentation-only mode (not true editflow source process):
+Multi-step source noising is rejected by default in training; current method is one-step oracle editflow.
+
+Optional augmentation-only mode (not core editflow algorithm):
 
 ```bash
 python scripts/train_editflow.py \

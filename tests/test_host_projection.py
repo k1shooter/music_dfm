@@ -5,7 +5,8 @@ def test_host_template_projection_validity():
     state = FSNTGV2State(
         span_attrs={
             "key": [0, 0],
-            "harm": [0, 7],
+            "harm_root": [0, 7],
+            "harm_quality": [1, 3],
             "meter": [4, 4],
             "section": [0, 0],
             "reg_center": [4, 4],

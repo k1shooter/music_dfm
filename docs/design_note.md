@@ -12,11 +12,12 @@ Trusted implementation parts:
 
 Approximate / experimental parts:
 
-- graph-kernel path for `span.harm` and `note.pitch_token`:
+- graph-kernel path for `span.harm_root` and `note.pitch_token`:
   - target distribution uses kernel-mixture surrogate
   - target rates use off-diagonal Poisson approximation
   - runtime logs and checkpoint/eval metadata explicitly mark this as approximate
-- editflow uses explicit edit coordinates, heads, sampler, and loss, but source-state construction is prior-driven CTMC noising rather than a proven exact bridge process
+- editflow training is currently **one-step oracle supervision** (`editflow_source_steps == 1` by default)
+- multi-step expanded-state editflow targets are future work unless explicitly enabled for experiments
 
 ## Representation
 
@@ -24,7 +25,7 @@ State:
 
 `X = (S, N, H, Q, E_SS)`
 
-- `S`: span channels `key, harm, meter, section, reg_center`
+- `S`: span channels `key, harm_root, harm_quality, meter, section, reg_center`
 - `N`: note channels `active, pitch_token, velocity, role`
 - `H`: `host[i] in {0..J}` (`0` means inactive/no-host)
 - `Q`: `template[i] in {0..|Q|}` (`0` means inactive/no-template)
@@ -40,9 +41,9 @@ Primary diffusion coordinates are factorized channels, not dense note-span edges
 - `role_class` (`chord_tone | scale_tone | chromatic`)
 - `register_offset`
 
-Encoding is relative to host-span harmony root (`span.harm`), not key tonic.
-Decode uses both `key` and `harm`: harmonic root determines the base pitch class, and `role_class`
-is used for role-consistent degree snapping before absolute reconstruction.
+Encoding is relative to host-span harmony root (`span.harm_root`), not key tonic.
+Decode uses `harm_root` directly for base pitch-class reconstruction and `harm_quality` for chord-tone
+compatibility and degree snapping behavior. Reconstruction is not a simple `(key + degree) mod 12` rule.
 
 Provided API:
 
@@ -91,7 +92,7 @@ Source distribution is factorized over coordinates with sparse priors for struct
 - placement priors (`host/template`) constrained by masks and note activity
 - categorical priors for content channels
 
-Graph-kernel mode is optional for `span.harm` / `note.pitch_token` and marked approximate.
+Graph-kernel mode is optional for `span.harm_root` / `note.pitch_token` and marked approximate.
 
 Approximate target distribution and rate in graph-kernel mode:
 
@@ -142,6 +143,7 @@ Includes:
 - forward noising for editflow training via edit-CTMC prior (`sample_forward_edit_ctmc_source`)
 
 This is separate from fixed-slot DFM training. Random edit augmentation remains optional and is not treated as editflow.
+Trainer enforces one-step oracle supervision by default and rejects multi-step source settings unless explicitly overridden.
 
 ## Decode Projection
 
@@ -167,7 +169,7 @@ Metrics include:
 - chord accuracy/similarity
 - groove similarity
 - note density
-- host uniqueness
+- host validity / invalid host rate
 - duplicate note rate
 - invalid decode rate
 - voice-leading large-leap penalty
@@ -175,6 +177,17 @@ Metrics include:
 - phrase repetition consistency
 - direct symbolic and whole-song metrics
 - graph validity metrics
+
+## Structure Loss Efficiency Knobs
+
+Decoded-note semantics remain the source of truth. Runtime controls:
+
+- `train.structure_loss_every_k_steps`
+- `train.structure_loss_subsample_notes`
+- `train.structure_loss_subsample_pairs`
+- `train.fast_music_loss_only`
+
+When full decoded penalties are skipped by cadence, training logs report full decoded-structure evaluation steps.
 
 ## Approximations
 

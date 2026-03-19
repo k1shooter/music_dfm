@@ -95,13 +95,13 @@ def _ticks_per_span(span_resolution: str, ticks_per_beat: int, beats_per_bar: in
 
 def _span_chord(
     span_start: int,
-    chord_rows: Sequence[Tuple[int, int, int, int]],
+    chord_rows: Sequence[Tuple[int, int, int, int, int]],
     fallback_key: int,
-) -> tuple[int, int]:
-    for start, end, key, harm_root in chord_rows:
+) -> tuple[int, int, int]:
+    for start, end, key, harm_root, harm_quality in chord_rows:
         if start <= span_start < end:
-            return int(key), int(harm_root)
-    return int(fallback_key), int(fallback_key)
+            return int(key), int(harm_root), int(harm_quality)
+    return int(fallback_key), int(fallback_key), 0
 
 
 def _safe_reg_center(pitches: List[int]) -> int:
@@ -147,7 +147,7 @@ def _build_state(
     cfg: PreprocessConfig,
     rhythm_vocab: RhythmTemplateVocab,
     pitch_codec: PitchTokenCodec,
-    chord_rows: Sequence[Tuple[int, int, int, int]],
+    chord_rows: Sequence[Tuple[int, int, int, int, int]],
 ) -> FSNTGV2State:
     tps = _ticks_per_span(cfg.span_resolution, tpq, beats_per_bar)
     max_tick = max((e.end_tick for e in events), default=tps)
@@ -156,20 +156,22 @@ def _build_state(
 
     tonic = chord_rows[0][2] if chord_rows else 0
     key = []
-    harm = []
+    harm_root = []
+    harm_quality = []
     meter = []
     reg_center = []
 
     for j, start in enumerate(span_starts):
-        span_key, span_harm = _span_chord(start, chord_rows, tonic)
+        span_key, span_harm_root, span_harm_quality = _span_chord(start, chord_rows, tonic)
         key.append(span_key)
-        harm.append(span_harm)
+        harm_root.append(span_harm_root)
+        harm_quality.append(span_harm_quality)
         meter.append(beats_per_bar * 16 + beat_unit)
         pitches = [e.pitch for e in events if e.onset_tick // tps == j]
         reg_center.append(_safe_reg_center(pitches))
 
     section = derive_section_labels(num_spans)
-    e_ss = derive_span_relation_matrix(harm, section)
+    e_ss = derive_span_relation_matrix(harm_root, section)
 
     active: List[int] = []
     pitch_tokens: List[int] = []
@@ -195,7 +197,8 @@ def _build_state(
             abs_pitch=event.pitch,
             host_span_state={
                 "key": key[span_idx],
-                "harm": harm[span_idx],
+                "harm_root": harm_root[span_idx],
+                "harm_quality": harm_quality[span_idx],
                 "reg_center": reg_center[span_idx],
             },
         )
@@ -210,7 +213,8 @@ def _build_state(
     return FSNTGV2State(
         span_attrs={
             "key": key,
-            "harm": harm,
+            "harm_root": harm_root,
+            "harm_quality": harm_quality,
             "meter": meter,
             "section": section,
             "reg_center": reg_center,
@@ -305,7 +309,7 @@ def preprocess_pop909(cfg: PreprocessConfig) -> dict:
     stats = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "rhythm_template_vocab_version": "rhythm_templates_v2",
-        "pitch_codec_version": "harmony_relative_role_v2",
+        "pitch_codec_version": "harmony_relative_root_quality_v3",
         "num_songs": len(states),
         "num_train": len(train),
         "num_valid": len(valid),

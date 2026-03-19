@@ -34,5 +34,9 @@ train:
   weight_decay: 0.0001
   beta_aux: 0.2
   beta_structure: 0.1
+  structure_loss_every_k_steps: 1
+  structure_loss_subsample_notes: 0
+  structure_loss_subsample_pairs: 0
+  fast_music_loss_only: false
   save_every: 1
   checkpoint_dir: artifacts/checkpoints

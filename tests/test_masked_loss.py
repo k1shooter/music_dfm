@@ -13,7 +13,8 @@ def _dummy_outputs_and_targets():
     }
     x1 = {
         "span.key": torch.tensor([[1, 3]]),
-        "span.harm": torch.tensor([[2, 5]]),
+        "span.harm_root": torch.tensor([[2, 5]]),
+        "span.harm_quality": torch.tensor([[1, 3]]),
         "span.meter": torch.tensor([[4, 4]]),
         "span.section": torch.tensor([[0, 1]]),
         "span.reg_center": torch.tensor([[3, 7]]),
@@ -35,7 +36,8 @@ def _dummy_outputs_and_targets():
         }
     masks = {
         "span.key": batch["span_mask"],
-        "span.harm": batch["span_mask"],
+        "span.harm_root": batch["span_mask"],
+        "span.harm_quality": batch["span_mask"],
         "span.meter": batch["span_mask"],
         "span.section": batch["span_mask"],
         "span.reg_center": batch["span_mask"],

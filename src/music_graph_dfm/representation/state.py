@@ -130,14 +130,14 @@ class FSNTGV2State:
 
             onset = self.span_starts[span_idx] + rhythm_vocab.onset_ticks(template_id, self.ticks_per_span)
             duration = rhythm_vocab.duration_ticks_with_semantics(template_id, self.ticks_per_span)
-            key = int(self.span_attrs["key"][span_idx])
-            harm = int(self.span_attrs["harm"][span_idx])
-            reg_center = int(self.span_attrs["reg_center"][span_idx])
-            pitch = pitch_codec.absolute_pitch(
-                key=key,
-                harmonic_root=harm,
-                reg_center=reg_center,
+            pitch = pitch_codec.decode_pitch_token(
                 token=int(self.note_attrs["pitch_token"][i]),
+                host_span_state={
+                    "key": int(self.span_attrs["key"][span_idx]),
+                    "harm_root": int(self.span_attrs["harm_root"][span_idx]),
+                    "harm_quality": int(self.span_attrs["harm_quality"][span_idx]),
+                    "reg_center": int(self.span_attrs["reg_center"][span_idx]),
+                },
             )
             velocity_bin = int(self.note_attrs["velocity"][i])
             velocity = max(1, min(127, 12 + velocity_bin * 8))
@@ -168,8 +168,14 @@ class FSNTGV2State:
 
     @classmethod
     def from_dict(cls, payload: dict) -> "FSNTGV2State":
+        span_attrs = {k: list(v) for k, v in payload["span_attrs"].items()}
+        if "harm_root" not in span_attrs and "harm" in span_attrs:
+            # Backward compatibility for older caches.
+            span_attrs["harm_root"] = list(span_attrs.pop("harm"))
+        if "harm_quality" not in span_attrs:
+            span_attrs["harm_quality"] = [0 for _ in range(len(span_attrs.get("harm_root", [])))]
         return cls(
-            span_attrs={k: list(v) for k, v in payload["span_attrs"].items()},
+            span_attrs=span_attrs,
             note_attrs={k: list(v) for k, v in payload["note_attrs"].items()},
             host=list(payload["host"]),
             template=list(payload["template"]),

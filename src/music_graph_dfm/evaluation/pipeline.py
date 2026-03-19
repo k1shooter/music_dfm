@@ -146,6 +146,7 @@ def evaluate_checkpoint(
         "checkpoint_meta": {
             "mode": ckpt_extra.get("mode", ""),
             "graph_kernel": ckpt_extra.get("graph_kernel", {}),
+            "graph_kernel_target_rate_mode": ckpt_extra.get("graph_kernel_target_rate_mode", ""),
             "model_cfg": ckpt_extra.get("model_cfg", {}),
             "vocab_sizes": ckpt_extra.get("vocab_sizes", {}),
         },

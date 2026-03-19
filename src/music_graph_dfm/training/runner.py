@@ -8,7 +8,7 @@ import random
 from pathlib import Path
 from typing import Dict, List
 
-from music_graph_dfm.constants import GRAPH_KERNEL_APPROX_COORDS
+from music_graph_dfm.constants import GRAPH_KERNEL_APPROX_COORDS, SPAN_CHANNELS
 from music_graph_dfm.data import FSNTGV2JSONDataset, collate_states, infer_vocab_sizes
 from music_graph_dfm.diffusion.ctmc import ctmc_sample
 from music_graph_dfm.diffusion.edit_flow import (
@@ -146,10 +146,7 @@ def _coords_to_states(coords: Dict[str, "torch.Tensor"], base_batch: dict) -> Li
     for b in range(span_mask.shape[0]):
         s = int(span_mask[b].sum().item())
         n = int(note_mask[b].sum().item())
-        span_attrs = {
-            channel: coords[f"span.{channel}"][b, :s].detach().cpu().tolist()
-            for channel in ["key", "harm", "meter", "section", "reg_center"]
-        }
+        span_attrs = {channel: coords[f"span.{channel}"][b, :s].detach().cpu().tolist() for channel in SPAN_CHANNELS}
         note_attrs = {
             channel: coords[f"note.{channel}"][b, :n].detach().cpu().tolist()
             for channel in ["active", "pitch_token", "velocity", "role"]
@@ -200,7 +197,7 @@ def _graph_kernels(vocab_sizes: dict, enabled: bool):
         raise RuntimeError("torch is required") from exc
 
     kernels = {}
-    for coord, radius in [("span.harm", 1), ("note.pitch_token", 2)]:
+    for coord, radius in [("span.harm_root", 1), ("note.pitch_token", 2)]:
         v = int(vocab_sizes[coord])
         mat = torch.zeros((v, v), dtype=torch.float32)
         for i in range(v):
@@ -253,6 +250,7 @@ def _checkpoint_extra(
             "pitch_codec": _load_optional_json(data_root / "pitch_codec.json"),
         },
         "graph_kernel_is_approximate": bool(graph_kernel_meta["approximate"]),
+        "graph_kernel_target_rate_mode": graph_kernel_meta["target_rate_approximation"],
         "graph_kernel": graph_kernel_meta,
     }
 
@@ -289,7 +287,7 @@ def _init_training_context(cfg: dict):
     graph_kernel_enabled = bool(cfg["diffusion"].get("graph_kernel", {}).get("enabled", False))
     if path_type == "graph_kernel" and graph_kernel_enabled:
         LOGGER.warning(
-            "Graph-kernel path enabled for span.harm/note.pitch_token. "
+            "Graph-kernel path enabled for span.harm_root/note.pitch_token. "
             "Target rates use an approximate off-diagonal matching surrogate."
         )
     if path_type == "graph_kernel" and not graph_kernel_enabled:
@@ -365,13 +363,19 @@ def run_training_dfm(cfg: dict) -> dict:
 
     beta_aux = float(cfg["train"].get("beta_aux", 0.2))
     beta_structure = float(cfg["train"].get("beta_structure", 0.1))
+    structure_loss_every_k_steps = max(1, int(cfg["train"].get("structure_loss_every_k_steps", 1)))
+    structure_loss_subsample_notes = max(0, int(cfg["train"].get("structure_loss_subsample_notes", 0)))
+    structure_loss_subsample_pairs = max(0, int(cfg["train"].get("structure_loss_subsample_pairs", 0)))
+    fast_music_loss_only = bool(cfg["train"].get("fast_music_loss_only", False))
     epochs = int(ctx["epochs"])
     history = []
+    global_step = 0
 
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
         batches = 0
+        full_structure_steps = 0
 
         for states in train_loader:
             optimizer.zero_grad(set_to_none=True)
@@ -395,6 +399,7 @@ def run_training_dfm(cfg: dict) -> dict:
 
             loss_rate = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
             loss_aux = auxiliary_denoising_loss(outputs, x1, masks)
+            run_full_structure = (global_step % structure_loss_every_k_steps == 0) and (not fast_music_loss_only)
             loss_structure_dict = music_structure_loss(
                 outputs=outputs,
                 x_t=xt,
@@ -403,8 +408,14 @@ def run_training_dfm(cfg: dict) -> dict:
                 rhythm_vocab=rhythm_vocab,
                 pitch_codec=pitch_codec,
                 compat_table=compat_table,
+                fast_music_loss_only=not run_full_structure,
+                structure_loss_subsample_notes=structure_loss_subsample_notes,
+                structure_loss_subsample_pairs=structure_loss_subsample_pairs,
             )
             loss_structure = loss_structure_dict["total"]
+            if run_full_structure:
+                full_structure_steps += 1
+                LOGGER.info("Decoded structure loss executed at global_step=%d", global_step)
             loss = loss_rate + beta_aux * loss_aux + beta_structure * loss_structure
 
             loss.backward()
@@ -412,6 +423,7 @@ def run_training_dfm(cfg: dict) -> dict:
 
             train_loss += float(loss.item())
             batches += 1
+            global_step += 1
 
         train_loss /= max(1, batches)
 
@@ -446,6 +458,9 @@ def run_training_dfm(cfg: dict) -> dict:
                     rhythm_vocab=rhythm_vocab,
                     pitch_codec=pitch_codec,
                     compat_table=compat_table,
+                    fast_music_loss_only=fast_music_loss_only,
+                    structure_loss_subsample_notes=structure_loss_subsample_notes,
+                    structure_loss_subsample_pairs=structure_loss_subsample_pairs,
                 )
                 loss_structure = loss_structure_dict["total"]
                 loss = loss_rate + beta_aux * loss_aux + beta_structure * loss_structure
@@ -454,7 +469,15 @@ def run_training_dfm(cfg: dict) -> dict:
                 vb += 1
         valid_loss /= max(1, vb)
 
-        summary = {"epoch": epoch + 1, "train_loss": train_loss, "valid_loss": valid_loss, "mode": "dfm"}
+        summary = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "valid_loss": valid_loss,
+            "mode": "dfm",
+            "structure_loss_full_steps": full_structure_steps,
+            "structure_loss_every_k_steps": structure_loss_every_k_steps,
+            "fast_music_loss_only": fast_music_loss_only,
+        }
         history.append(summary)
         print(summary)
 
@@ -493,6 +516,12 @@ def run_training_editflow(cfg: dict) -> dict:
     history = []
     source_steps = int(cfg.get("train", {}).get("editflow_source_steps", 1))
     use_random_aug = bool(cfg.get("train", {}).get("editflow_random_augmentation", False))
+    allow_multistep_oracle = bool(cfg.get("train", {}).get("allow_multistep_oracle", False))
+    if source_steps != 1 and not allow_multistep_oracle:
+        raise ValueError(
+            "Current editflow training supports one-step oracle supervision only. "
+            "Set train.editflow_source_steps=1."
+        )
 
     for epoch in range(epochs):
         model.train()
@@ -582,7 +611,8 @@ def run_training_editflow(cfg: dict) -> dict:
                     mode="editflow",
                     data_root=ctx["data_root"],
                     graph_kernel_enabled=bool(ctx["graph_kernel_enabled"]),
-                ),
+                )
+                | {"editflow_mode": "one_step_oracle"},
             )
 
     return {"history": history, "final": history[-1] if history else {}}

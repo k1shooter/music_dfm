@@ -7,9 +7,10 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
 | Area | Old mismatch | New fix |
 |---|---|---|
 | Docs vs code status | README/design note could overstate exactness | Method status now separates trusted vs approximate parts |
+| Harmonic span semantics | Single `harm` channel mixed root/function semantics | Span channels split into `harm_root` + `harm_quality`, propagated through preprocessing/state/model/loss/eval |
 | Pitch token semantics | API and usage were mixed between component-level and context-level semantics | Primary API is now host-context encode/decode (`abs_pitch <-> token`) with compatibility/projection helpers |
 | CTMC sampler | Degenerate off-diagonal mass could still trigger non-faithful behavior | Degenerate case now forces stay; masked/padded coordinates always stay |
-| Editflow training source process | Random perturbation used as primary source generation | Forward edit-CTMC prior noising is primary; augmentation renamed and optional |
+| Editflow training source process | Random perturbation used as primary source generation | One-step oracle editflow supervision enforced by default (`editflow_source_steps == 1`); augmentation renamed and optional |
 | Graph-kernel path | Approximation not fully explicit in metadata/reporting | Approximation formula and coordinates are stored in checkpoint/eval metadata; warnings are logged |
 | Developer UX | uv-first workflow in docs/examples | Script-first `python scripts/*.py` workflow with venv+pip primary |
 
@@ -45,9 +46,14 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
     - `decode_pitch_token(token, host_span_state)`
     - `compatibility_table(host_span_state, token)`
     - `nearest_token_projection(...)`
-  - decode uses both harmonic root and role semantics
+  - decode uses both `harm_root` and `harm_quality` semantics
 - `src/music_graph_dfm/preprocessing/pop909.py`
-  - preprocessing now stores pitch tokens via host-context encode path
+  - preprocessing now stores `harm_root` + `harm_quality` span channels and host-context pitch tokens
+- `src/music_graph_dfm/preprocessing/chords.py`
+  - chord parsing now exports harmony root and quality IDs
+- `src/music_graph_dfm/constants.py`
+  - `SPAN_CHANNELS` and coordinate order updated to `harm_root` + `harm_quality`
+  - graph-kernel approximate coordinates now reference `span.harm_root`
 - `src/music_graph_dfm/diffusion/ctmc.py`
   - strict off-diagonal normalization with explicit degenerate stay behavior
 - `src/music_graph_dfm/diffusion/edit_flow.py`
@@ -65,10 +71,12 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
   - normalized graph-kernel targets and explicit target-rate approximation helper
 - `src/music_graph_dfm/diffusion/losses.py`
   - graph-kernel target rate approximation wired explicitly for supported coords
+  - decoded structure-loss cadence/subsampling knobs added (`structure_loss_every_k_steps`, note/pair subsampling, fast mode)
 - `src/music_graph_dfm/training/runner.py`
-  - editflow source generation switched to forward edit-CTMC prior by default
+  - editflow enforces one-step oracle supervision by default; multi-step rejected unless explicitly overridden
   - optional augmentation path preserved under explicit flag
   - graph-kernel approximation metadata added to checkpoints
+  - decoded structure-loss execution cadence logged and recorded in summaries
 - `src/music_graph_dfm/evaluation/pipeline.py`
   - checkpoint eval now stores checkpoint metadata in report
   - optional MIDI export in checkpoint eval mode
@@ -91,6 +99,6 @@ This note records the targeted correction pass from partially aligned FSNTG-v2 c
 ## Remaining Approximations / Limitations
 
 - Graph-kernel path remains approximate by design in this codebase.
-- Editflow source noising is CTMC-prior driven; it is not yet an exact bridge construction with closed-form forward/posterior transitions.
+- Editflow training is one-step oracle supervision; multi-step expanded-state editflow targets are not implemented.
 - Harmony compatibility scoring is lightweight rule-based (not a learned music-theory model).
 - Section/repetition heuristics remain deterministic and rule-based.

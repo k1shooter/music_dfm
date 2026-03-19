@@ -17,12 +17,14 @@ def main() -> None:
     parser.add_argument("--data-root", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--editflow-source-steps", type=int, default=1)
+    parser.add_argument("--allow-multistep-oracle", action="store_true")
     parser.add_argument("--editflow-random-augmentation", action="store_true")
     args = parser.parse_args()
 
     cfg = load_yaml(Path(args.config))
     cfg.setdefault("train", {})["mode"] = "editflow"
     cfg["train"]["editflow_source_steps"] = int(args.editflow_source_steps)
+    cfg["train"]["allow_multistep_oracle"] = bool(args.allow_multistep_oracle)
     cfg["train"]["editflow_random_augmentation"] = bool(args.editflow_random_augmentation)
     if args.data_root:
         cfg["data_root"] = args.data_root

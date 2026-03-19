@@ -156,31 +156,32 @@ def harmonic_compatibility_penalty_from_outputs(
 
     bsz, n, h_vocab = host_prob.shape
     pitch_vocab = pitch_prob.shape[-1]
-    total = torch.tensor(0.0, device=host_prob.device)
-    count = torch.tensor(0.0, device=host_prob.device)
+    span_count = x_t["span.key"].shape[1]
+    if h_vocab <= 1 or span_count <= 0:
+        return torch.tensor(0.0, device=host_prob.device)
 
-    for b in range(bsz):
-        for i in range(n):
-            if note_mask[b, i] <= 0:
-                continue
-            exp_compat = torch.tensor(0.0, device=host_prob.device)
-            norm = torch.tensor(0.0, device=host_prob.device)
-            for host in range(1, h_vocab):
-                span_idx = host - 1
-                if span_idx >= x_t["span.key"].shape[1]:
-                    continue
-                key = int(x_t["span.key"][b, span_idx].item())
-                harm = int(x_t["span.harm"][b, span_idx].item())
-                key = max(0, min(compat_table.shape[0] - 1, key))
-                harm = max(0, min(compat_table.shape[1] - 1, harm))
-                compat_row = compat_table[key, harm, :pitch_vocab]
-                exp_compat = exp_compat + host_prob[b, i, host] * (compat_row * pitch_prob[b, i]).sum()
-                norm = norm + host_prob[b, i, host]
-            if norm > 0:
-                exp_compat = exp_compat / norm
-            total = total + (1.0 - exp_compat)
-            count = count + 1.0
-    return total / count.clamp(min=1.0)
+    # Build compatibility rows for each host category in a batched way.
+    compat_by_host = torch.zeros((bsz, h_vocab, pitch_vocab), dtype=torch.float32, device=host_prob.device)
+    for host in range(1, h_vocab):
+        span_idx = host - 1
+        if span_idx >= span_count:
+            continue
+        key = x_t["span.key"][:, span_idx].clamp(min=0, max=compat_table.shape[0] - 1).to(torch.long)
+        harm_root = x_t["span.harm_root"][:, span_idx].clamp(min=0, max=compat_table.shape[1] - 1).to(torch.long)
+        if compat_table.dim() == 3:
+            compat_row = compat_table[key, harm_root, :pitch_vocab]
+        else:
+            harm_quality = x_t["span.harm_quality"][:, span_idx].clamp(min=0, max=compat_table.shape[2] - 1).to(torch.long)
+            compat_row = compat_table[key, harm_root, harm_quality, :pitch_vocab]
+        compat_by_host[:, host, :] = compat_row
+
+    compat_note_host = torch.einsum("bht,bnt->bnh", compat_by_host, pitch_prob)
+    host_nonzero = host_prob[:, :, 1:]
+    compat_nonzero = compat_note_host[:, :, 1:]
+    host_mass = host_nonzero.sum(dim=-1).clamp(min=1e-8)
+    exp_compat = (host_nonzero * compat_nonzero).sum(dim=-1) / host_mass
+    penalty = (1.0 - exp_compat) * note_mask
+    return penalty.sum() / note_mask.sum().clamp(min=1.0)
 
 
 def _argmax_coords_from_outputs(outputs: Dict[str, dict], x_t: Dict[str, "torch.Tensor"]) -> Dict[str, "torch.Tensor"]:
@@ -197,6 +198,8 @@ def _decoded_structure_penalties(
     batch: dict,
     rhythm_vocab,
     pitch_codec,
+    subsample_notes: int = 0,
+    subsample_pairs: int = 0,
 ):
     try:
         import torch
@@ -212,6 +215,9 @@ def _decoded_structure_penalties(
     rep_vals = []
     for state in states:
         notes = state.decode_notes(rhythm_vocab, pitch_codec)
+        if subsample_notes > 0 and len(notes) > subsample_notes:
+            notes = sorted(notes, key=lambda n: (n.onset_tick, n.note_idx))[:subsample_notes]
+
         seen = set()
         duplicates = 0
         for note in notes:
@@ -225,7 +231,10 @@ def _decoded_structure_penalties(
         note_lookup = {n.note_idx: n for n in notes}
         total = 0
         bad = 0
-        for src, dst in aux.sequential_same_role:
+        seq_pairs = list(aux.sequential_same_role)
+        if subsample_pairs > 0 and len(seq_pairs) > subsample_pairs:
+            seq_pairs = seq_pairs[:subsample_pairs]
+        for src, dst in seq_pairs:
             if src not in note_lookup or dst not in note_lookup:
                 continue
             total += 1
@@ -242,6 +251,8 @@ def _decoded_structure_penalties(
         if not pairs:
             rep_vals.append(0.0)
         else:
+            if subsample_pairs > 0 and len(pairs) > subsample_pairs:
+                pairs = pairs[:subsample_pairs]
             mismatch = sum(
                 1
                 for i, j in pairs
@@ -264,10 +275,28 @@ def music_structure_loss(
     rhythm_vocab,
     pitch_codec,
     compat_table: "torch.Tensor" | None = None,
+    fast_music_loss_only: bool = False,
+    structure_loss_subsample_notes: int = 0,
+    structure_loss_subsample_pairs: int = 0,
 ):
     host = host_uniqueness_penalty_from_outputs(outputs, masks)
     harm = harmonic_compatibility_penalty_from_outputs(outputs, x_t, masks, compat_table)
-    decoded = _decoded_structure_penalties(outputs, x_t, batch, rhythm_vocab, pitch_codec)
+    if fast_music_loss_only:
+        decoded = {
+            "duplicate": host.new_tensor(0.0),
+            "voice_leading": host.new_tensor(0.0),
+            "repetition": host.new_tensor(0.0),
+        }
+    else:
+        decoded = _decoded_structure_penalties(
+            outputs,
+            x_t,
+            batch,
+            rhythm_vocab,
+            pitch_codec,
+            subsample_notes=max(0, int(structure_loss_subsample_notes)),
+            subsample_pairs=max(0, int(structure_loss_subsample_pairs)),
+        )
     total = host + harm + decoded["duplicate"] + decoded["voice_leading"] + decoded["repetition"]
     return {
         "total": total,
@@ -276,4 +305,5 @@ def music_structure_loss(
         "duplicate": decoded["duplicate"],
         "voice_leading": decoded["voice_leading"],
         "repetition": decoded["repetition"],
+        "full_decoded_executed": 0.0 if fast_music_loss_only else 1.0,
     }
