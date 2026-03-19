@@ -173,6 +173,14 @@ uv run music-graph-dfm visualize \
   --out artifacts/visualization_summary.json
 ```
 
+Alias:
+
+```bash
+uv run music-graph-dfm viz \
+  --sample-dir artifacts/samples \
+  --out artifacts/visualization_summary.json
+```
+
 ## Tests
 
 ```bash

@@ -30,13 +30,13 @@ COORD_ORDER = [
     "span.meter",
     "span.section",
     "span.reg_center",
-    "e_ss.relation",
-    "note.host",
-    "note.template",
     "note.active",
     "note.pitch_token",
     "note.velocity",
     "note.role",
+    "note.host",
+    "note.template",
+    "e_ss.relation",
 ]
 
 COORD_GROUPS = {

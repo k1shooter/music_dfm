@@ -25,7 +25,7 @@ class RhythmTemplateVocab:
         onset_bins: int = 8,
         duration_ticks: List[int] | None = None,
         max_extension_class: int = 4,
-        tie_extension_fraction: float = 0.5,
+        tie_extension_fraction: float = 1.0,
     ) -> None:
         self.top_k_per_meter = int(top_k_per_meter)
         self.onset_bins = int(onset_bins)
@@ -162,7 +162,7 @@ class RhythmTemplateVocab:
             onset_bins=int(payload.get("onset_bins", 8)),
             duration_ticks=list(payload.get("duration_ticks", [60, 120, 180, 240, 360, 480, 720, 960])),
             max_extension_class=int(payload.get("max_extension_class", 4)),
-            tie_extension_fraction=float(payload.get("tie_extension_fraction", 0.5)),
+            tie_extension_fraction=float(payload.get("tie_extension_fraction", 1.0)),
         )
         obj.templates = []
         obj.template_to_id = {}

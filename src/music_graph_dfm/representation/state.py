@@ -204,10 +204,43 @@ def reconstruct_aux_graph(
         by_role.setdefault(note.role, []).append(note)
     for role_notes in by_role.values():
         ordered = sorted(role_notes, key=lambda n: (n.onset_tick, n.note_idx))
-        for left, right in zip(ordered[:-1], ordered[1:]):
+        for left, right in zip(ordered[:-1], ordered[1:], strict=False):
             graph.sequential_same_role.append((left.note_idx, right.note_idx))
 
     return graph
+
+
+def materialize_dense_note_span_view(state: FSNTGV2State) -> List[List[int]]:
+    """Optional dense [num_notes, num_spans] view derived from (host, template)."""
+    return state.materialize_note_span_template_adjacency()
+
+
+def project_host_template_validity(state: FSNTGV2State) -> FSNTGV2State:
+    """Projects invalid host/template coordinates to a valid inactive representation."""
+    out = state.copy()
+    out.project_placement_consistency()
+    return out
+
+
+def cleanup_duplicate_notes(
+    state: FSNTGV2State,
+    rhythm_vocab: RhythmTemplateVocab,
+    pitch_codec: PitchTokenCodec,
+) -> FSNTGV2State:
+    """Deactivates duplicates with identical decoded (host,onset,duration,pitch,role)."""
+    out = state.copy()
+    seen = set()
+    for note in out.decode_notes(rhythm_vocab, pitch_codec):
+        key = (note.host_span, note.onset_tick, note.duration_tick, note.pitch, note.role)
+        if key in seen:
+            idx = int(note.note_idx)
+            out.note_attrs["active"][idx] = 0
+            out.host[idx] = 0
+            out.template[idx] = 0
+            continue
+        seen.add(key)
+    out.project_placement_consistency()
+    return out
 
 
 def empty_state(num_spans: int, num_notes: int, ticks_per_span: int = 480) -> FSNTGV2State:

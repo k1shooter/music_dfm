@@ -5,7 +5,17 @@ from music_graph_dfm.training.runner import (
     generate_samples_from_checkpoint,
     load_checkpoint,
     run_training,
+    run_training_dfm,
+    run_training_editflow,
     save_checkpoint,
 )
 
-__all__ = ["build_model", "generate_samples_from_checkpoint", "load_checkpoint", "run_training", "save_checkpoint"]
+__all__ = [
+    "build_model",
+    "generate_samples_from_checkpoint",
+    "load_checkpoint",
+    "run_training",
+    "run_training_dfm",
+    "run_training_editflow",
+    "save_checkpoint",
+]

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, List
 
 from music_graph_dfm.data import FSNTGV2JSONDataset, collate_states, infer_vocab_sizes
 from music_graph_dfm.diffusion.ctmc import ctmc_sample
@@ -14,7 +15,7 @@ from music_graph_dfm.diffusion.edit_flow import (
     perturb_state_for_editflow,
     sample_edit_ctmc_step,
 )
-from music_graph_dfm.diffusion.losses import auxiliary_denoising_loss, host_uniqueness_penalty, rate_matching_loss
+from music_graph_dfm.diffusion.losses import auxiliary_denoising_loss, music_structure_loss, rate_matching_loss
 from music_graph_dfm.diffusion.masking import coordinate_masks, enforce_state_constraints
 from music_graph_dfm.diffusion.schedules import StructureFirstSchedule
 from music_graph_dfm.diffusion.state_ops import (
@@ -54,14 +55,28 @@ def _move_to_device(obj, device):
     return obj
 
 
-def _template_tables(rhythm_vocab: RhythmTemplateVocab, max_vocab: int) -> tuple[list[int], list[int]]:
-    tps = 480
-    onset = [0 for _ in range(max_vocab)]
-    duration = [1 for _ in range(max_vocab)]
+def _template_spec(rhythm_vocab: RhythmTemplateVocab, max_vocab: int) -> dict:
+    onset_bin = [0 for _ in range(max_vocab)]
+    duration_class = [0 for _ in range(max_vocab)]
+    tie_flag = [0 for _ in range(max_vocab)]
+    extension_class = [0 for _ in range(max_vocab)]
+
     for idx in range(min(max_vocab, rhythm_vocab.vocab_size)):
-        onset[idx] = rhythm_vocab.onset_ticks(idx, tps)
-        duration[idx] = rhythm_vocab.duration_ticks_with_semantics(idx, tps)
-    return onset, duration
+        tpl = rhythm_vocab.decode(idx)
+        onset_bin[idx] = int(tpl.onset_bin)
+        duration_class[idx] = int(tpl.duration_class)
+        tie_flag[idx] = int(tpl.tie_flag)
+        extension_class[idx] = int(tpl.extension_class)
+
+    return {
+        "onset_bin": onset_bin,
+        "duration_class": duration_class,
+        "tie_flag": tie_flag,
+        "extension_class": extension_class,
+        "duration_ticks": list(rhythm_vocab.duration_ticks),
+        "onset_bins": int(rhythm_vocab.onset_bins),
+        "tie_extension_fraction": float(rhythm_vocab.tie_extension_fraction),
+    }
 
 
 def build_model(vocab_sizes: dict, model_cfg: dict, rhythm_vocab: RhythmTemplateVocab):
@@ -72,15 +87,14 @@ def build_model(vocab_sizes: dict, model_cfg: dict, rhythm_vocab: RhythmTemplate
         dropout=float(model_cfg.get("dropout", 0.1)),
     )
     kind = str(model_cfg.get("kind", "full"))
-    onset, duration = _template_tables(rhythm_vocab, max(2, int(vocab_sizes["note.template"])))
+    spec = _template_spec(rhythm_vocab, max(2, int(vocab_sizes["note.template"])))
 
     if kind in {"baseline", "posterior", "progress_like"}:
         return SimpleFactorizedBaseline(vocab_sizes=vocab_sizes, cfg=cfg)
     return FSNTGV2HeteroTransformer(
         vocab_sizes=vocab_sizes,
         cfg=cfg,
-        template_onset_ticks=onset,
-        template_duration_ticks=duration,
+        template_spec=spec,
     )
 
 
@@ -193,7 +207,41 @@ def _graph_kernels(vocab_sizes: dict, enabled: bool):
     return kernels
 
 
-def run_training(cfg: dict) -> dict:
+def _load_optional_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _checkpoint_extra(
+    cfg: dict,
+    vocab_sizes: dict,
+    mode: str,
+    data_root: Path,
+    graph_kernel_enabled: bool,
+) -> dict:
+    return {
+        "cfg": cfg,
+        "mode": mode,
+        "vocab_sizes": vocab_sizes,
+        "model_cfg": dict(cfg.get("model", {})),
+        "train_cfg": dict(cfg.get("train", {})),
+        "diffusion_cfg": dict(cfg.get("diffusion", {})),
+        "data_meta": {
+            "data_root": str(data_root),
+            "stats": _load_optional_json(data_root / "stats.json"),
+            "preprocessing_config": _load_optional_json(data_root / "preprocessing_config.json"),
+            "rhythm_template_vocab": _load_optional_json(data_root / "rhythm_templates.json"),
+            "pitch_codec": _load_optional_json(data_root / "pitch_codec.json"),
+        },
+        "graph_kernel_is_approximate": bool(graph_kernel_enabled),
+    }
+
+
+def _init_training_context(cfg: dict):
     try:
         import torch
     except Exception as exc:  # pragma: no cover
@@ -205,7 +253,7 @@ def run_training(cfg: dict) -> dict:
     if len(train_set) == 0:
         raise RuntimeError(f"No training data found in {data_root}")
 
-    rhythm_vocab, _pitch_codec = _load_codecs(data_root)
+    rhythm_vocab, pitch_codec = _load_codecs(data_root)
     vocab_sizes = infer_vocab_sizes(train_set.states)
 
     model = build_model(vocab_sizes=vocab_sizes, model_cfg=cfg["model"], rhythm_vocab=rhythm_vocab)
@@ -222,8 +270,9 @@ def run_training(cfg: dict) -> dict:
     schedule = StructureFirstSchedule(**cfg["diffusion"].get("schedule", {}))
     prior_cfg = PriorConfig(**cfg["diffusion"].get("prior", {}))
     path_type = str(cfg["diffusion"].get("path_type", "mixture"))
+    graph_kernel_enabled = bool(cfg["diffusion"].get("graph_kernel", {}).get("enabled", False))
 
-    kernels = _graph_kernels(vocab_sizes, enabled=bool(cfg["diffusion"].get("graph_kernel", {}).get("enabled", False)))
+    kernels = _graph_kernels(vocab_sizes, enabled=graph_kernel_enabled)
     kernels = {k: v.to(device) for k, v in kernels.items()}
 
     train_loader = _make_loader(
@@ -239,12 +288,58 @@ def run_training(cfg: dict) -> dict:
         num_workers=int(cfg.get("num_workers", 0)),
     )
 
-    mode = str(cfg["train"].get("mode", "dfm"))
     epochs = int(cfg["train"].get("epochs", 20))
-    beta_aux = float(cfg["train"].get("beta_aux", 0.2))
-    beta_host = float(cfg["train"].get("beta_host", 0.1))
-
     rng = random.Random(int(cfg.get("seed", 7)))
+    compat_table = torch.tensor(pitch_codec.compatibility_table(), dtype=torch.float32, device=device)
+
+    return {
+        "data_root": data_root,
+        "train_set": train_set,
+        "valid_set": valid_set,
+        "rhythm_vocab": rhythm_vocab,
+        "pitch_codec": pitch_codec,
+        "compat_table": compat_table,
+        "vocab_sizes": vocab_sizes,
+        "model": model,
+        "optimizer": optimizer,
+        "schedule": schedule,
+        "prior_cfg": prior_cfg,
+        "path_type": path_type,
+        "graph_kernel_enabled": graph_kernel_enabled,
+        "kernels": kernels,
+        "train_loader": train_loader,
+        "valid_loader": valid_loader,
+        "epochs": epochs,
+        "rng": rng,
+        "device": device,
+    }
+
+
+def run_training_dfm(cfg: dict) -> dict:
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("torch is required for training") from exc
+
+    ctx = _init_training_context(cfg)
+    model = ctx["model"]
+    optimizer = ctx["optimizer"]
+    train_loader = ctx["train_loader"]
+    valid_loader = ctx["valid_loader"]
+    schedule = ctx["schedule"]
+    prior_cfg = ctx["prior_cfg"]
+    path_type = ctx["path_type"]
+    kernels = ctx["kernels"]
+    vocab_sizes = ctx["vocab_sizes"]
+    rhythm_vocab = ctx["rhythm_vocab"]
+    pitch_codec = ctx["pitch_codec"]
+    compat_table = ctx["compat_table"]
+    rng = ctx["rng"]
+    device = ctx["device"]
+
+    beta_aux = float(cfg["train"].get("beta_aux", 0.2))
+    beta_structure = float(cfg["train"].get("beta_structure", 0.1))
+    epochs = int(ctx["epochs"])
     history = []
 
     for epoch in range(epochs):
@@ -254,39 +349,37 @@ def run_training(cfg: dict) -> dict:
 
         for states in train_loader:
             optimizer.zero_grad(set_to_none=True)
+            batch = _move_to_device(collate_states(states), device)
+            x1 = batch_to_coords(batch)
+            x0 = sample_prior(batch, vocab_sizes=vocab_sizes, cfg=prior_cfg)
 
-            if mode == "editflow":
-                target_states = states
-                source_states = [perturb_state_for_editflow(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
-                oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
+            t_float = rng.uniform(0.01, 0.99)
+            xt, xt_is_x0, eta, path_meta = sample_forward_path(
+                x0,
+                x1,
+                t=t_float,
+                schedule=schedule,
+                path_type=path_type,
+                graph_kernels=kernels,
+            )
+            xt = enforce_state_constraints(xt, batch)
+            batch_xt = coords_to_batch(batch, xt)
+            outputs = model(batch_xt, torch.tensor(t_float, device=device))
+            masks = coordinate_masks(batch_xt)
 
-                batch = _move_to_device(collate_states(source_states), device)
-                t = torch.tensor(rng.uniform(0.01, 0.99), device=device)
-                edit_outputs = model.forward_edit(batch, t)
-                loss = editflow_rate_loss(edit_outputs, oracle)
-            else:
-                batch = _move_to_device(collate_states(states), device)
-                x1 = batch_to_coords(batch)
-                x0 = sample_prior(batch, vocab_sizes=vocab_sizes, cfg=prior_cfg)
-
-                t_float = rng.uniform(0.01, 0.99)
-                xt, xt_is_x0, eta, path_meta = sample_forward_path(
-                    x0,
-                    x1,
-                    t=t_float,
-                    schedule=schedule,
-                    path_type=path_type,
-                    graph_kernels=kernels,
-                )
-                xt = enforce_state_constraints(xt, batch)
-                batch_xt = coords_to_batch(batch, xt)
-                outputs = model(batch_xt, torch.tensor(t_float, device=device))
-                masks = coordinate_masks(batch_xt)
-
-                loss_rate = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
-                loss_aux = auxiliary_denoising_loss(outputs, x1, masks)
-                loss_host = host_uniqueness_penalty(xt, masks)
-                loss = loss_rate + beta_aux * loss_aux + beta_host * loss_host
+            loss_rate = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
+            loss_aux = auxiliary_denoising_loss(outputs, x1, masks)
+            loss_structure_dict = music_structure_loss(
+                outputs=outputs,
+                x_t=xt,
+                batch=batch_xt,
+                masks=masks,
+                rhythm_vocab=rhythm_vocab,
+                pitch_codec=pitch_codec,
+                compat_table=compat_table,
+            )
+            loss_structure = loss_structure_dict["total"]
+            loss = loss_rate + beta_aux * loss_aux + beta_structure * loss_structure
 
             loss.backward()
             optimizer.step()
@@ -301,34 +394,41 @@ def run_training(cfg: dict) -> dict:
         vb = 0
         with torch.no_grad():
             for states in valid_loader:
-                if mode == "editflow":
-                    target_states = states
-                    source_states = [perturb_state_for_editflow(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
-                    oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
-                    batch = _move_to_device(collate_states(source_states), device)
-                    edit_outputs = model.forward_edit(batch, torch.tensor(0.5, device=device))
-                    loss = editflow_rate_loss(edit_outputs, oracle)
-                else:
-                    batch = _move_to_device(collate_states(states), device)
-                    x1 = batch_to_coords(batch)
-                    x0 = sample_prior(batch, vocab_sizes=vocab_sizes, cfg=prior_cfg)
-                    xt, xt_is_x0, eta, path_meta = sample_forward_path(
-                        x0,
-                        x1,
-                        t=0.5,
-                        schedule=schedule,
-                        path_type=path_type,
-                        graph_kernels=kernels,
-                    )
-                    xt = enforce_state_constraints(xt, batch)
-                    outputs = model(coords_to_batch(batch, xt), torch.tensor(0.5, device=device))
-                    masks = coordinate_masks(batch)
-                    loss = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
+                batch = _move_to_device(collate_states(states), device)
+                x1 = batch_to_coords(batch)
+                x0 = sample_prior(batch, vocab_sizes=vocab_sizes, cfg=prior_cfg)
+                xt, xt_is_x0, eta, path_meta = sample_forward_path(
+                    x0,
+                    x1,
+                    t=0.5,
+                    schedule=schedule,
+                    path_type=path_type,
+                    graph_kernels=kernels,
+                )
+                xt = enforce_state_constraints(xt, batch)
+                batch_xt = coords_to_batch(batch, xt)
+                outputs = model(batch_xt, torch.tensor(0.5, device=device))
+                masks = coordinate_masks(batch_xt)
+
+                loss_rate = rate_matching_loss(outputs, xt, x1, xt_is_x0, eta, masks, path_meta)
+                loss_aux = auxiliary_denoising_loss(outputs, x1, masks)
+                loss_structure_dict = music_structure_loss(
+                    outputs=outputs,
+                    x_t=xt,
+                    batch=batch_xt,
+                    masks=masks,
+                    rhythm_vocab=rhythm_vocab,
+                    pitch_codec=pitch_codec,
+                    compat_table=compat_table,
+                )
+                loss_structure = loss_structure_dict["total"]
+                loss = loss_rate + beta_aux * loss_aux + beta_structure * loss_structure
+
                 valid_loss += float(loss.item())
                 vb += 1
         valid_loss /= max(1, vb)
 
-        summary = {"epoch": epoch + 1, "train_loss": train_loss, "valid_loss": valid_loss, "mode": mode}
+        summary = {"epoch": epoch + 1, "train_loss": train_loss, "valid_loss": valid_loss, "mode": "dfm"}
         history.append(summary)
         print(summary)
 
@@ -337,15 +437,100 @@ def run_training(cfg: dict) -> dict:
                 Path(cfg["train"].get("checkpoint_dir", "artifacts/checkpoints")) / f"epoch_{epoch + 1}.pt",
                 model,
                 optimizer=optimizer,
-                extra={
-                    "cfg": cfg,
-                    "vocab_sizes": vocab_sizes,
-                    "model_cfg": cfg["model"],
-                    "mode": mode,
-                },
+                extra=_checkpoint_extra(
+                    cfg=cfg,
+                    vocab_sizes=vocab_sizes,
+                    mode="dfm",
+                    data_root=ctx["data_root"],
+                    graph_kernel_enabled=bool(ctx["graph_kernel_enabled"]),
+                ),
             )
 
     return {"history": history, "final": history[-1] if history else {}}
+
+
+def run_training_editflow(cfg: dict) -> dict:
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("torch is required for training") from exc
+
+    ctx = _init_training_context(cfg)
+    model = ctx["model"]
+    optimizer = ctx["optimizer"]
+    train_loader = ctx["train_loader"]
+    valid_loader = ctx["valid_loader"]
+    vocab_sizes = ctx["vocab_sizes"]
+    rng = ctx["rng"]
+    device = ctx["device"]
+    epochs = int(ctx["epochs"])
+    history = []
+
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0.0
+        batches = 0
+
+        for states in train_loader:
+            optimizer.zero_grad(set_to_none=True)
+            target_states = states
+            source_states = [perturb_state_for_editflow(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
+            oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
+
+            batch = _move_to_device(collate_states(source_states), device)
+            t = torch.tensor(rng.uniform(0.01, 0.99), device=device)
+            edit_outputs = model.forward_edit(batch, t)
+            loss = editflow_rate_loss(edit_outputs, oracle)
+
+            loss.backward()
+            optimizer.step()
+
+            train_loss += float(loss.item())
+            batches += 1
+
+        train_loss /= max(1, batches)
+
+        model.eval()
+        valid_loss = 0.0
+        vb = 0
+        with torch.no_grad():
+            for states in valid_loader:
+                target_states = states
+                source_states = [perturb_state_for_editflow(st, vocab_sizes=vocab_sizes, rng=rng) for st in target_states]
+                oracle = [derive_oracle_edit_move(src, tgt) for src, tgt in zip(source_states, target_states)]
+                batch = _move_to_device(collate_states(source_states), device)
+                edit_outputs = model.forward_edit(batch, torch.tensor(0.5, device=device))
+                loss = editflow_rate_loss(edit_outputs, oracle)
+                valid_loss += float(loss.item())
+                vb += 1
+        valid_loss /= max(1, vb)
+
+        summary = {"epoch": epoch + 1, "train_loss": train_loss, "valid_loss": valid_loss, "mode": "editflow"}
+        history.append(summary)
+        print(summary)
+
+        if (epoch + 1) % int(cfg["train"].get("save_every", 1)) == 0:
+            save_checkpoint(
+                Path(cfg["train"].get("checkpoint_dir", "artifacts/checkpoints")) / f"epoch_{epoch + 1}.pt",
+                model,
+                optimizer=optimizer,
+                extra=_checkpoint_extra(
+                    cfg=cfg,
+                    vocab_sizes=vocab_sizes,
+                    mode="editflow",
+                    data_root=ctx["data_root"],
+                    graph_kernel_enabled=bool(ctx["graph_kernel_enabled"]),
+                ),
+            )
+
+    return {"history": history, "final": history[-1] if history else {}}
+
+
+def run_training(cfg: dict) -> dict:
+    mode = str(cfg.get("train", {}).get("mode", "dfm"))
+    if mode == "editflow":
+        return run_training_editflow(cfg)
+    return run_training_dfm(cfg)
 
 
 def _load_model_for_sampling(checkpoint: Path, data_root: Path, split: str, device: str):

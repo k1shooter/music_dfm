@@ -3,7 +3,10 @@
 from music_graph_dfm.representation.pitch_codec import (
     PitchToken,
     PitchTokenCodec,
+    compatibility_table_for_state,
+    decode_pitch_token_to_abs,
     decode_pitch_token,
+    encode_pitch_token_from_state,
     encode_pitch_token,
 )
 from music_graph_dfm.representation.rhythm_templates import RhythmTemplate, RhythmTemplateVocab
@@ -23,8 +26,11 @@ __all__ = [
     "PitchTokenCodec",
     "RhythmTemplate",
     "RhythmTemplateVocab",
+    "compatibility_table_for_state",
+    "decode_pitch_token_to_abs",
     "decode_pitch_token",
     "empty_state",
+    "encode_pitch_token_from_state",
     "encode_pitch_token",
     "reconstruct_aux_graph",
 ]

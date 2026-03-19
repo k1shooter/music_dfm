@@ -56,8 +56,16 @@ class PitchTokenCodec:
             role_class = 0
         return encode_pitch_token(self, degree_wrt_harmony, role_class, register_offset)
 
+    def encode_pitch_token(self, abs_pitch: int, host_span_state: dict) -> int:
+        """Encode from absolute pitch and host span context."""
+        return encode_pitch_token_from_state(self, abs_pitch, host_span_state)
+
     def decode(self, token: int) -> PitchToken:
         return decode_pitch_token(self, token)
+
+    def decode_pitch_token(self, token: int, host_span_state: dict) -> int:
+        """Decode to absolute MIDI pitch with host span context."""
+        return decode_pitch_token_to_abs(self, token, host_span_state)
 
     def encode_from_absolute_pitch(
         self,
@@ -224,3 +232,25 @@ def encode_pitch_token(
 
 def decode_pitch_token(codec: PitchTokenCodec, token: int) -> PitchToken:
     return codec._token_to_pitch.get(int(token), codec._token_to_pitch[codec.pad_token])
+
+
+def encode_pitch_token_from_state(codec: PitchTokenCodec, abs_pitch: int, host_span_state: dict) -> int:
+    return codec.encode_from_absolute_pitch(
+        pitch=int(abs_pitch),
+        harmonic_root=int(host_span_state.get("harm", 0)),
+        key=int(host_span_state.get("key", 0)),
+        reg_center=int(host_span_state.get("reg_center", 4)),
+    )
+
+
+def decode_pitch_token_to_abs(codec: PitchTokenCodec, token: int, host_span_state: dict) -> int:
+    return codec.absolute_pitch(
+        key=int(host_span_state.get("key", 0)),
+        harmonic_root=int(host_span_state.get("harm", 0)),
+        reg_center=int(host_span_state.get("reg_center", 4)),
+        token=int(token),
+    )
+
+
+def compatibility_table_for_state(codec: PitchTokenCodec, host_span_state: dict, token: int) -> float:
+    return codec.compatibility_for_state(host_span_state=host_span_state, token=int(token))

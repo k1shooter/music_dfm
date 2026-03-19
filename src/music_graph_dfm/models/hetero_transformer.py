@@ -131,8 +131,7 @@ if nn is not None:
             self,
             vocab_sizes: Dict[str, int],
             cfg: ModelConfig,
-            template_onset_ticks: list[int] | None = None,
-            template_duration_ticks: list[int] | None = None,
+            template_spec: dict | None = None,
         ):
             super().__init__()
             self.vocab_sizes = vocab_sizes
@@ -193,16 +192,61 @@ if nn is not None:
             self.edit_insert_template = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["note.template"])))
             self.edit_span_rel = nn.Linear(cfg.hidden_dim, max(2, int(vocab_sizes["e_ss.relation"])))
 
-            onset = template_onset_ticks or [0]
-            dur = template_duration_ticks or [1]
-            self.register_buffer("template_onset_ticks", torch.tensor(onset, dtype=torch.float32), persistent=False)
-            self.register_buffer("template_duration_ticks", torch.tensor(dur, dtype=torch.float32), persistent=False)
+            spec = template_spec or {}
+            onset_bin = spec.get("onset_bin", [0])
+            duration_class = spec.get("duration_class", [0])
+            tie_flag = spec.get("tie_flag", [0])
+            extension_class = spec.get("extension_class", [0])
+            duration_ticks = spec.get("duration_ticks", [1])
+            self.template_onset_bins = int(spec.get("onset_bins", 8))
+            self.tie_extension_fraction = float(spec.get("tie_extension_fraction", 1.0))
 
-        def _template_lookup(self, template: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-            vmax = self.template_onset_ticks.shape[0] - 1
+            self.register_buffer(
+                "template_onset_bin",
+                torch.tensor(onset_bin, dtype=torch.float32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "template_duration_class",
+                torch.tensor(duration_class, dtype=torch.long),
+                persistent=False,
+            )
+            self.register_buffer(
+                "template_tie_flag",
+                torch.tensor(tie_flag, dtype=torch.float32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "template_extension_class",
+                torch.tensor(extension_class, dtype=torch.float32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "duration_ticks_values",
+                torch.tensor(duration_ticks, dtype=torch.float32),
+                persistent=False,
+            )
+
+        def _template_lookup(self, template: torch.Tensor, ticks_per_span: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            vmax = self.template_onset_bin.shape[0] - 1
             template = template.clamp(min=0, max=max(0, vmax))
-            onset = self.template_onset_ticks[template]
-            duration = self.template_duration_ticks[template]
+            tps = ticks_per_span.to(torch.float32).unsqueeze(-1)
+
+            onset_bin = self.template_onset_bin[template]
+            if self.template_onset_bins <= 1:
+                onset = torch.zeros_like(onset_bin)
+            else:
+                onset = torch.round((onset_bin / max(1, self.template_onset_bins - 1)) * tps)
+
+            duration_class = self.template_duration_class[template].clamp(
+                min=0,
+                max=max(0, self.duration_ticks_values.shape[0] - 1),
+            )
+            base = self.duration_ticks_values[duration_class]
+            tie = self.template_tie_flag[template]
+            ext = self.template_extension_class[template]
+            tie_bonus = torch.round(tps * self.tie_extension_fraction) * tie
+            duration = base + tie_bonus + ext * tps
             return onset, duration
 
         def _reconstruct_aux_relations(self, batch: dict) -> torch.Tensor:
@@ -215,7 +259,7 @@ if nn is not None:
 
             bsz, n = host.shape
             rel = torch.zeros((bsz, n, n), dtype=torch.long, device=host.device)
-            onset_tbl, dur_tbl = self._template_lookup(template)
+            onset_tbl, dur_tbl = self._template_lookup(template, ticks_per_span=ticks_per_span)
 
             for b in range(bsz):
                 tps = ticks_per_span[b].to(torch.float32)

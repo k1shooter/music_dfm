@@ -221,6 +221,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_viz.add_argument("--out", type=str, default="artifacts/visualization_summary.json")
     p_viz.set_defaults(func=cmd_visualize)
 
+    p_viz_alias = sub.add_parser("viz", help="Alias for visualize")
+    p_viz_alias.add_argument("--sample-dir", type=str, default="artifacts/samples")
+    p_viz_alias.add_argument("--out", type=str, default="artifacts/visualization_summary.json")
+    p_viz_alias.set_defaults(func=cmd_visualize)
+
     return parser
 
 

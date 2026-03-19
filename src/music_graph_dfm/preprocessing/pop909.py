@@ -52,7 +52,7 @@ def _find_midi(song_dir: Path) -> Path | None:
     return mids[0] if mids else None
 
 
-def _load_note_events(midi_path: Path) -> tuple[List[RawNoteEvent], int, int]:
+def _load_note_events(midi_path: Path) -> tuple[List[RawNoteEvent], int, int, int]:
     try:
         import miditoolkit
     except Exception as exc:  # pragma: no cover
@@ -61,8 +61,10 @@ def _load_note_events(midi_path: Path) -> tuple[List[RawNoteEvent], int, int]:
     midi = miditoolkit.MidiFile(str(midi_path))
     tpq = max(1, int(getattr(midi, "ticks_per_beat", DEFAULT_TICKS_PER_BEAT)))
     beats_per_bar = 4
+    beat_unit = 4
     if midi.time_signature_changes:
         beats_per_bar = int(midi.time_signature_changes[0].numerator)
+        beat_unit = int(midi.time_signature_changes[0].denominator)
 
     events: List[RawNoteEvent] = []
     for role, inst in enumerate(midi.instruments):
@@ -78,7 +80,7 @@ def _load_note_events(midi_path: Path) -> tuple[List[RawNoteEvent], int, int]:
                 )
             )
     events.sort(key=lambda e: (e.onset_tick, e.pitch, e.end_tick))
-    return events, tpq, beats_per_bar
+    return events, tpq, beats_per_bar, beat_unit
 
 
 def _ticks_per_span(span_resolution: str, ticks_per_beat: int, beats_per_bar: int) -> int:
@@ -110,7 +112,7 @@ def _safe_reg_center(pitches: List[int]) -> int:
 
 
 def _collect_template_records(
-    songs: Sequence[Tuple[Path, List[RawNoteEvent], int, int]],
+    songs: Sequence[Tuple[Path, List[RawNoteEvent], int, int, int]],
     cfg: PreprocessConfig,
 ) -> list[tuple[int, int, int, int, int]]:
     records = []
@@ -119,9 +121,9 @@ def _collect_template_records(
         onset_bins=cfg.onset_bins,
         max_extension_class=cfg.max_extension_class,
     )
-    for _song_dir, events, tpq, beats_per_bar in songs:
+    for _song_dir, events, tpq, beats_per_bar, beat_unit in songs:
         tps = _ticks_per_span(cfg.span_resolution, tpq, beats_per_bar)
-        meter = beats_per_bar
+        meter = beats_per_bar * 16 + beat_unit
         for event in events:
             span_idx = event.onset_tick // tps
             local = event.onset_tick - span_idx * tps
@@ -141,6 +143,7 @@ def _build_state(
     events: List[RawNoteEvent],
     tpq: int,
     beats_per_bar: int,
+    beat_unit: int,
     cfg: PreprocessConfig,
     rhythm_vocab: RhythmTemplateVocab,
     pitch_codec: PitchTokenCodec,
@@ -161,7 +164,7 @@ def _build_state(
         span_key, span_harm = _span_chord(start, chord_rows, tonic)
         key.append(span_key)
         harm.append(span_harm)
-        meter.append(beats_per_bar)
+        meter.append(beats_per_bar * 16 + beat_unit)
         pitches = [e.pitch for e in events if e.onset_tick // tps == j]
         reg_center.append(_safe_reg_center(pitches))
 
@@ -186,7 +189,8 @@ def _build_state(
         extension = max(0, event.end_tick - span_end) // max(1, tps)
         extension = min(cfg.max_extension_class, extension)
 
-        template_id = rhythm_vocab.encode(beats_per_bar, onset_bin, dur_class, tie, extension)
+        meter_class = beats_per_bar * 16 + beat_unit
+        template_id = rhythm_vocab.encode(meter_class, onset_bin, dur_class, tie, extension)
         token = pitch_codec.encode_from_absolute_pitch(
             pitch=event.pitch,
             harmonic_root=harm[span_idx],
@@ -220,7 +224,11 @@ def _build_state(
         e_ss=e_ss,
         span_starts=span_starts,
         ticks_per_span=tps,
-        metadata={"song_id": song_id, "span_resolution": cfg.span_resolution},
+        metadata={
+            "song_id": song_id,
+            "span_resolution": cfg.span_resolution,
+            "meter_class": str(beats_per_bar * 16 + beat_unit),
+        },
     )
 
 
@@ -241,18 +249,18 @@ def preprocess_pop909(cfg: PreprocessConfig) -> dict:
     output_root.mkdir(parents=True, exist_ok=True)
 
     song_dirs = sorted([p for p in raw_root.iterdir() if p.is_dir()])
-    raw_songs: List[Tuple[Path, List[RawNoteEvent], int, int]] = []
+    raw_songs: List[Tuple[Path, List[RawNoteEvent], int, int, int]] = []
     for song_dir in song_dirs:
         midi_path = _find_midi(song_dir)
         if midi_path is None:
             continue
         try:
-            events, tpq, beats_per_bar = _load_note_events(midi_path)
+            events, tpq, beats_per_bar, beat_unit = _load_note_events(midi_path)
         except Exception:
             continue
         if len(events) < cfg.min_notes_per_song:
             continue
-        raw_songs.append((song_dir, events, tpq, beats_per_bar))
+        raw_songs.append((song_dir, events, tpq, beats_per_bar, beat_unit))
 
     records = _collect_template_records(raw_songs, cfg)
     rhythm_vocab = RhythmTemplateVocab(
@@ -264,13 +272,14 @@ def preprocess_pop909(cfg: PreprocessConfig) -> dict:
     pitch_codec = PitchTokenCodec()
 
     states: List[FSNTGV2State] = []
-    for song_dir, events, tpq, beats_per_bar in raw_songs:
+    for song_dir, events, tpq, beats_per_bar, beat_unit in raw_songs:
         chords = load_pop909_chords(song_dir)
         state = _build_state(
             song_id=song_dir.name,
             events=events,
             tpq=tpq,
             beats_per_bar=beats_per_bar,
+            beat_unit=beat_unit,
             cfg=cfg,
             rhythm_vocab=rhythm_vocab,
             pitch_codec=pitch_codec,
@@ -293,6 +302,8 @@ def preprocess_pop909(cfg: PreprocessConfig) -> dict:
 
     stats = {
         "schema_version": CACHE_SCHEMA_VERSION,
+        "rhythm_template_vocab_version": "rhythm_templates_v2",
+        "pitch_codec_version": "harmony_relative_role_v2",
         "num_songs": len(states),
         "num_train": len(train),
         "num_valid": len(valid),
